@@ -233,8 +233,15 @@ async function withScratch(body) {
 // that returns a promise.
 const MAKES_SCRATCH = /mkdtemp\w*/g
 
-// The names an `import` declaration binds, up to the module it names.
-const IMPORT_CLAUSE = /^import\b[\w$\s{},*]*/gm
+// A block or line comment. A block comment ends at the first `*/`.
+const COMMENT = String.raw`\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*`
+
+// The names an `import` declaration binds, up to the module it names, with the
+// comments that stand between them.
+const IMPORT_CLAUSE = new RegExp(String.raw`^import\b(?:[\w$\s{},*]|${COMMENT})*`, 'gm')
+
+// What follows a name that an `import` renames: `as`, after space or comments.
+const RENAMED = new RegExp(String.raw`^(?:\s|${COMMENT})+as\b`)
 
 // Where `source` names a function that makes a temporary directory: how often
 // in `withScratch`, and the 1-based lines elsewhere. The name counts wherever
@@ -242,19 +249,25 @@ const IMPORT_CLAUSE = /^import\b[\w$\s{},*]*/gm
 // call does. Two places are not counted: the pattern above, which holds the
 // name and uses nothing, and an `import` that binds the function under its own
 // name, since every use of that binding is counted. An `import` that renames
-// the function is counted, because the uses of the new name are not.
+// the function is counted, because the uses of the new name are not, and so is
+// the name in a comment inside an `import`, which binds nothing.
 function scratchSites(source) {
   const start = source.indexOf('\nasync function withScratch(')
   const end = source.indexOf('\n}\n', start)
   assert.ok(start >= 0 && end > start, 'withScratch was not found')
   const pattern = String(MAKES_SCRATCH)
-  const clauses = [...source.matchAll(IMPORT_CLAUSE)].map((clause) => [clause.index, clause.index + clause[0].length])
+  const clauses = [...source.matchAll(IMPORT_CLAUSE)].map(({ 0: text, index }) => ({
+    from: index,
+    to: index + text.length,
+    comments: [...text.matchAll(new RegExp(COMMENT, 'g'))].map((c) => [index + c.index, index + c.index + c[0].length]),
+  }))
   const sites = [...source.matchAll(MAKES_SCRATCH)]
     .filter(({ 0: name, index }) => {
       if (source.startsWith(pattern, index - 1)) return false
       const after = index + name.length
-      const clause = clauses.find(([from, to]) => index >= from && after <= to)
-      return !clause || /^\s+as\b/.test(source.slice(after, clause[1]))
+      const clause = clauses.find(({ from, to }) => index >= from && after <= to)
+      if (!clause || clause.comments.some(([from, to]) => index >= from && index < to)) return true
+      return RENAMED.test(source.slice(after, clause.to))
     })
     .map(({ index }) => index)
   const outside = sites.filter((index) => index < start || index > end)
@@ -264,33 +277,56 @@ function scratchSites(source) {
   }
 }
 
+// Fails unless `source` names a function that makes a temporary directory in
+// `withScratch` and nowhere else. The name counts in a comment or a string as
+// well, so the message names the line, not a scratch directory made there.
+function assertScratchOnlyInWithScratch(source) {
+  const { inside, outside } = scratchSites(source)
+  assert.equal(inside, 1, 'withScratch does not make its scratch directory')
+  assert.deepEqual(outside, [], `outside withScratch, a temporary-directory function is named at line ${outside.join(', line ')}`)
+}
+
 // A scratch directory made anywhere but `withScratch` is removed only if
 // nothing between its creation and its own cleanup throws.
 test('the tests make their scratch directories only through withScratch', () => {
-  const { inside, outside } = scratchSites(readFileSync(new URL(import.meta.url), 'utf8'))
-  assert.equal(inside, 1, 'withScratch does not make its scratch directory')
-  assert.deepEqual(outside, [], `a scratch directory is made outside withScratch, at line ${outside.join(', line ')}`)
+  assertScratchOnlyInWithScratch(readFileSync(new URL(import.meta.url), 'utf8'))
 })
 
-// Each line is added above `neverExits`, where no scratch directory is made.
-// The names are read from `withScratch`, so this test names no such function
-// itself and adds nothing for the check above to count.
-test('a scratch directory made under another name, or without the synchronous call, counts as made outside withScratch', () => {
+// This file with `added` as a new line above `neverExits`, where no scratch
+// directory is made, and the 1-based number of that line.
+function addedAboveNeverExits(added) {
   const source = readFileSync(new URL(import.meta.url), 'utf8')
-  const [synchronous] = String(withScratch).match(MAKES_SCRATCH)
-  const asynchronous = synchronous.replace(/Sync$/, '')
   const at = source.indexOf('\nfunction neverExits(')
   assert.ok(at >= 0, 'neverExits was not found')
-  const line = source.slice(0, at).split('\n').length + 1
+  return { changed: `${source.slice(0, at)}\n${added}${source.slice(at)}`, line: source.slice(0, at).split('\n').length + 1 }
+}
+
+// The names are read from `withScratch`, so these tests name no such function
+// themselves and add nothing for the check above to count.
+test('a scratch directory made under another name, or without the synchronous call, counts as made outside withScratch', () => {
+  const [synchronous] = String(withScratch).match(MAKES_SCRATCH)
+  const asynchronous = synchronous.replace(/Sync$/, '')
   for (const added of [
     `const make = ${synchronous}`,
     `const made = ${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'), () => {})`,
     `const made = fs.promises.${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'))`,
     `import { ${synchronous} as make } from 'node:fs'`,
+    `import { ${synchronous} /* renamed */ as make } from 'node:fs'`,
+    `import { ${synchronous} // renamed\n as make } from 'node:fs'`,
+    `import { tmpdir /* ${synchronous} */ } from 'node:os'`,
   ]) {
-    const changed = `${source.slice(0, at)}\n${added}${source.slice(at)}`
+    const { changed, line } = addedAboveNeverExits(added)
     assert.deepEqual(scratchSites(changed), { inside: 1, outside: [line] }, `not counted: ${added}`)
   }
+})
+
+test('a comment that names a temporary-directory function fails the check with a message that says so', () => {
+  const [synchronous] = String(withScratch).match(MAKES_SCRATCH)
+  const { changed, line } = addedAboveNeverExits(`// ${synchronous}`)
+  // The message's first line: node can add the difference after it.
+  assert.throws(() => assertScratchOnlyInWithScratch(changed), {
+    message: new RegExp(`^outside withScratch, a temporary-directory function is named at line ${line}$`, 'm'),
+  })
 })
 
 test('a never-exiting command that is not the last one stops with the run', () =>
@@ -374,7 +410,7 @@ test('the process started outside the group has exited once the test using it ha
   let stillRuns = 0
   try {
     await withProcessOutsideTheGroup(t, { unref: true }, async (commands, pidFile) => {
-      await assert.rejects(runAsDocumented(commands, { timeout: 1_000 }), /still held stdout or stderr open/)
+      await assert.rejects(runAsDocumented(commands, { timeout: 2_000 }), /still held stdout or stderr open/)
       pid = await recordedPid(pidFile, 5_000)
     })
     assert.ok(pid > 0, 'the process outside the group did not record its process id')
@@ -387,6 +423,42 @@ test('the process started outside the group has exited once the test using it ha
         process.kill(stillRuns, 'SIGKILL')
       } catch {}
     }
+  }
+})
+
+// A test cancelled at its own timeout runs its `t.after` cleanups while its
+// body still runs, so the `finally` that stops the process has not run yet.
+// Here the body waits until the cleanup has been run and the process checked.
+test('the process started outside the group is stopped by t.after while the body still runs', { timeout: 15_000 }, async () => {
+  const after = []
+  let recorded
+  const started = new Promise((resolve) => (recorded = resolve))
+  let release
+  const released = new Promise((resolve) => (release = resolve))
+  let stillRuns = 0
+  const using = withProcessOutsideTheGroup({ after: (cleanup) => after.push(cleanup) }, { unref: true }, async (commands, pidFile) => {
+    const run = runAsDocumented(commands, { timeout: 2_000 }).catch((error) => error)
+    recorded(await recordedPid(pidFile, 5_000))
+    await released
+    await run
+  })
+  try {
+    // `using` settles first only if it fails before the body records the id.
+    const pid = await Promise.race([started, using])
+    assert.ok(pid > 0, 'the process outside the group did not record its process id')
+    assert.equal(after.length, 1, 'withProcessOutsideTheGroup registered no t.after cleanup')
+    await after[0]()
+    // Only a process seen running is stopped.
+    if (!(await exits(pid, 5_000))) stillRuns = pid
+    assert.equal(stillRuns, 0, `process ${pid}, started outside the group, still runs after the t.after cleanup`)
+  } finally {
+    if (stillRuns > 0) {
+      try {
+        process.kill(stillRuns, 'SIGKILL')
+      } catch {}
+    }
+    release()
+    await using
   }
 })
 
