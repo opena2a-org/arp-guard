@@ -429,6 +429,35 @@ test('a runner stopped while it runs stops the documented commands it started', 
   }
 })
 
+// A helper for startRunner whose runAsDocumented ignores SIGTERM and never
+// returns. It takes the name of a file in place of commands and records the
+// runner's process id there once its SIGTERM handler is installed, so a SIGTERM
+// sent after that is ignored.
+const ignoresSigterm = `data:text/javascript,${encodeURIComponent(`
+import { writeFileSync } from 'node:fs'
+export function runAsDocumented(pidFile) {
+  process.on('SIGTERM', () => {})
+  setInterval(() => {}, 1000)
+  writeFileSync(pidFile, String(process.pid))
+  return new Promise(() => {})
+}`)}`
+
+test('a runner that ignores SIGTERM is killed once the time to stop has passed', { timeout: 10_000 }, async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  const pidFile = join(scratch, 'pid')
+  const runner = startRunner(ignoresSigterm, pidFile)
+  try {
+    assert.equal(await documentedPid(runner, pidFile, 5_000), runner.child.pid)
+    await stopRunner(runner, 500)
+    const ended = await Promise.race([runner.ended, sleep(5_000, 'still running', { ref: false })])
+    assert.equal(ended, 'SIGKILL', `the runner ignored SIGTERM and was not killed; its stderr:\n${runner.stderr()}`)
+  } finally {
+    // stopRunner is what this test checks, so it is not trusted to clean up.
+    if (runner.child.exitCode === null && runner.child.signalCode === null) runner.child.kill('SIGKILL')
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
 test('the documented commands run through bash, so shell expansion applies', async () => {
   const lines = [
     '```bash',
