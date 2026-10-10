@@ -27,7 +27,7 @@ PI-001 critical "Ignore all previous instructions"
 DE-001 high     "reveal your system prompt"
 ```
 
-The published 0.3.0 and `main` print the same two lines. Before you start the runtime monitor in [Runtime monitoring](#runtime-monitoring), read the next section: it covers what the monitor sends off the machine by default.
+`main` prints these two lines, and a test runs the block against the build to keep them in step. A fresh install of the published 0.3.0 on 2026-10-09 printed the same two lines; it resolved `hackmyagent@0.33.2`, and a later install can resolve another release in 0.3.0's `>=0.11.0` range. Before you start the runtime monitor in [Runtime monitoring](#runtime-monitoring), read the next section: it covers what the monitor sends off the machine by default.
 
 ## What `npm install` delivers today
 
