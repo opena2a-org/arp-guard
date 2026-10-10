@@ -233,8 +233,11 @@ async function withScratch(body) {
 // that returns a promise.
 const MAKES_SCRATCH = /mkdtemp\w*/g
 
-// A block or line comment. A block comment ends at the first `*/`.
-const COMMENT = String.raw`\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*`
+// A block or line comment. A block comment ends at the first `*/`, or at the
+// end of the source when it is never closed. Without that end, each `import /*`
+// line that is never closed would scan the rest of the source before failing,
+// which takes quadratic time.
+const COMMENT = String.raw`\/\*(?:[^*]|\*(?!\/))*(?:\*\/|(?![\s\S]))|\/\/[^\n]*`
 
 // The names an `import` declaration binds, up to the module it names, with the
 // comments that stand between them.
@@ -341,6 +344,18 @@ test('a comment that names a temporary-directory function fails the check with a
   assert.throws(() => assertScratchOnlyInWithScratch(changed), {
     message: new RegExp(`^outside withScratch, a temporary-directory function is named at line ${line}$`, 'm'),
   })
+})
+
+test('import lines with a block comment that is never closed are read in linear time', () => {
+  const source = 'import /*\n'.repeat(20_000)
+  const started = Date.now()
+  const clauses = [...source.matchAll(IMPORT_CLAUSE)]
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 1_000, `reading the import clauses took ${elapsed} ms`)
+  assert.deepEqual(
+    clauses.map(({ 0: text, index }) => [index, text.length]),
+    [[0, source.length]],
+  )
 })
 
 test('a never-exiting command that is not the last one stops with the run', () =>
