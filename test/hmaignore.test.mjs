@@ -108,20 +108,35 @@ function parseLine(raw) {
   return { kind: 'path-check', path: rulePath, checkId, expires, reason }
 }
 
-const entries = readFileSync(path.join(root, '.hmaignore'), 'utf8')
-  .split('\n')
-  .map((text, index) => ({ at: `.hmaignore:${index + 1}`, text, parsed: parseLine(text) }))
+const lines = readFileSync(path.join(root, '.hmaignore'), 'utf8').split('\n')
+const entries = lines.map((text, index) => ({ at: `.hmaignore:${index + 1}`, text, parsed: parseLine(text) }))
 const rules = entries.filter(({ parsed }) => parsed.kind !== 'blank' && parsed.kind !== 'comment')
+
+// The comment at the top of a .hmaignore, each line without its `#`. It ends at
+// the first line that is not a comment, so a comment under a rule is not part
+// of it.
+function headerOf(lines) {
+  const comment = []
+  for (const text of lines) {
+    if (!text.startsWith('#')) break
+    comment.push(text.slice(1))
+  }
+  return comment
+}
+
+// A line of that comment that names a rule form: three spaces, then the form.
+const FORM = /^ {3}(\S+)/
+
+// The rule forms the comment at the top of a .hmaignore names.
+function formsIn(lines) {
+  return headerOf(lines).map((line) => line.match(FORM)?.[1]).filter(Boolean)
+}
 
 // What the comment at the top of .hmaignore says one rule form does: the text
 // after the form on its own line, then the indented lines under it.
 function describedAs(form) {
-  const comment = []
-  for (const { text } of entries) {
-    if (!text.startsWith('#')) break
-    comment.push(text.slice(1))
-  }
-  const start = comment.findIndex((line) => line.match(/^ {3}(\S+)/)?.[1] === form)
+  const comment = headerOf(lines)
+  const start = comment.findIndex((line) => line.match(FORM)?.[1] === form)
   if (start === -1) return null
   const said = [comment[start].replace(/^ {3}.*? {2,}/, '')]
   for (const line of comment.slice(start + 1)) {
@@ -135,15 +150,20 @@ function describedAs(form) {
 // description's own words by one: a wider gap in what describedAs returns
 // means part of the form was read as the description.
 test('describedAs returns each form\'s description without the rest of the form', () => {
-  const forms = entries
-    .filter(({ text }) => text.startsWith('#'))
-    .map(({ text }) => text.slice(1).match(/^ {3}(\S+)/)?.[1])
-    .filter(Boolean)
+  const forms = formsIn(lines)
   assert.ok(forms.includes('path:CHECK-ID'), 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
   for (const form of forms) {
     const said = describedAs(form)
+    assert.notEqual(said, null, `the comment at the top of .hmaignore names \`${form}\`, but describedAs finds no description of it`)
     assert.doesNotMatch(said, /^#| {2,}/, `the description of \`${form}\` starts with the rest of the form: "${said}"`)
   }
+})
+
+// A comment under a rule may be indented like a form; it is not part of the
+// comment at the top that describes the forms.
+test('the forms are read from the comment at the top of .hmaignore only', () => {
+  const noted = [...lines, '#   note  the rule above is renewed each quarter']
+  assert.deepEqual(formsIn(noted), formsIn(lines))
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
