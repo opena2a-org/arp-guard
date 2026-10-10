@@ -123,13 +123,28 @@ function describedAs(form) {
   }
   const start = comment.findIndex((line) => line.match(/^ {3}(\S+)/)?.[1] === form)
   if (start === -1) return null
-  const said = [comment[start].replace(/^ {3}\S+\s+/, '')]
+  const said = [comment[start].replace(/^ {3}.*? {2,}/, '')]
   for (const line of comment.slice(start + 1)) {
     if (!/^ {4,}\S/.test(line)) break
     said.push(line.trim())
   }
   return said.join(' ')
 }
+
+// A form is set off from its description by two or more spaces, and the
+// description's own words by one: a wider gap in what describedAs returns
+// means part of the form was read as the description.
+test('describedAs returns each form\'s description without the rest of the form', () => {
+  const forms = entries
+    .filter(({ text }) => text.startsWith('#'))
+    .map(({ text }) => text.slice(1).match(/^ {3}(\S+)/)?.[1])
+    .filter(Boolean)
+  assert.ok(forms.includes('path:CHECK-ID'), 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
+  for (const form of forms) {
+    const said = describedAs(form)
+    assert.doesNotMatch(said, /^#| {2,}/, `the description of \`${form}\` starts with the rest of the form: "${said}"`)
+  }
+})
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
   for (const line of [
