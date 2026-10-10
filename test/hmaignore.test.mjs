@@ -236,6 +236,17 @@ test('the comment says a path rule leaves the file read and takes its findings o
   assert.match(said, /findings leave the score and the exit code/, `the \`path\` form should say its findings leave the score and the exit code: "${said}"`)
 })
 
+// hackmyagent (0.33.x) counts a `path:CHECK-ID` rule's excluded findings on the
+// same Scope line as a path rule's: with this file's one rule,
+// `package.json:AIM-001`, `secure --ci` prints "Scope 1 finding excluded by
+// .hmaignore path rules (1 medium)".
+test('the comment says a path:CHECK-ID rule counts its findings on the Scope line', () => {
+  const said = describedAs('path:CHECK-ID')
+  assert.ok(said, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
+  assert.doesNotMatch(said, /named on the report's Scope line/, `the Scope line counts findings and names no path or check: "${said}"`)
+  assert.match(said, /counted by severity on the report's Scope line/, `the \`path:CHECK-ID\` form should say its findings are counted by severity on the report's Scope line: "${said}"`)
+})
+
 test('AIM-001 is left out on package.json only, with a reason and an expiry', () => {
   const aim = rules.filter(({ parsed }) => parsed.checkId === 'AIM-001')
   assert.deepEqual(
