@@ -11,13 +11,21 @@
 // expires. A rule on a path that is not in the repository covers nothing.
 //
 // The check takes the forms this file uses, which are fewer than the forms
-// hackmyagent applies. It also rejects these, which hackmyagent applies: a `*`
-// that is not the whole last segment of a check pattern (`!AIM*`, `!*-001`), a
-// path containing `?`, `[`, `]`, `{` or `}` (hackmyagent globs on `*` only, so
-// `app/[slug]/page.tsx` is a path), `expires:` in any case but lowercase, a `#`
-// with no reason after a `!CHECK-ID` or path rule, and a path with a colon in
-// it (`snapshot-10:30`), which this check reads as `path:CHECK-ID`. To write
-// one of those here, widen parseLine first.
+// hackmyagent applies. It also rejects these, which hackmyagent applies:
+//   a `*` that is not the whole last segment of a check pattern: `!AIM*`,
+//     `!*-001`
+//   a check pattern whose `*` is the whole last segment but that is not a
+//     letter-led ID of two or more segments: `!*` (which matches every check),
+//     `!1AIM-*`, `!0-*`
+//   a path containing `?`, `[`, `]`, `{` or `}`; hackmyagent globs on `*` only,
+//     so `app/[slug]/page.tsx` is a path
+//   a path containing a space: `my dir/file`, `my dir:AIM-001 # reason`
+//   `expires:` in any case but lowercase: `!AIM-001 EXPIRES:2026-12-31`
+//   a `#` with no reason after a `!CHECK-ID` or path rule: `!AIM-001 #`,
+//     `src/ #`
+//   a path with a colon in it, which this check reads as `path:CHECK-ID`:
+//     `snapshot-10:30`
+// To write one of those here, widen parseLine first.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -153,26 +161,36 @@ test('a `#` with no space or tab before it is part of the rule, not the start of
   assert.deepEqual(parseLine('src#bar # reason'), { kind: 'path', path: 'src#bar', expires: null, reason: 'reason' })
 })
 
+// The forms hackmyagent applies that this check rejects, one form per row: the
+// example the header names the form by, then more lines in that form.
+const APPLIED_NOT_TAKEN = [
+  ['!AIM*', '!AIM-0*'],
+  ['!*-001', 'package.json:*-001 # reason'],
+  ['!*', '!1AIM-*', '!0-*'],
+  ['app/[slug]/page.tsx', 'src/page?.ts', 'src/{a,b}/', 'src/a]b', 'src/a}b'],
+  ['my dir/file', 'my dir:AIM-001 # reason'],
+  ['!AIM-001 EXPIRES:2026-12-31', '!AIM-001 Expires:2026-12-31'],
+  ['!AIM-001 #', 'src/ #'],
+  ['snapshot-10:30'],
+]
+
 test('the grammar check rejects forms hackmyagent applies that this file does not use, and says the form is one it does not take', () => {
-  for (const line of [
-    '!AIM*',
-    '!AIM-0*',
-    '!*-001',
-    'package.json:*-001 # reason',
-    'app/[slug]/page.tsx',
-    'src/page?.ts',
-    'src/{a,b}/',
-    'src/a]b',
-    'src/a}b',
-    '!AIM-001 EXPIRES:2026-12-31',
-    '!AIM-001 Expires:2026-12-31',
-    '!AIM-001 #',
-    'src/ #',
-    'snapshot-10:30',
-  ]) {
+  for (const line of APPLIED_NOT_TAKEN.flat()) {
     const { error } = parseLine(line)
     assert.ok(error, `"${line}" should be rejected`)
     assert.match(error, /this check/, `"${line}": "${error}" should name the form as one this check does not take, not as one hackmyagent cannot apply`)
+  }
+})
+
+test('the header names every form hackmyagent applies that the grammar check rejects', () => {
+  const header = []
+  for (const line of readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n')) {
+    if (!line.startsWith('//')) break
+    header.push(line.slice(2).trim())
+  }
+  const said = header.join(' ')
+  for (const [example] of APPLIED_NOT_TAKEN) {
+    assert.ok(said.includes(`\`${example}\``), `the header at the top of this file does not name the form of \`${example}\``)
   }
 })
 
