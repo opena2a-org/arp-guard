@@ -279,6 +279,18 @@ test('a run whose commands exited while a process they started holds stdout says
   })
 })
 
+// Runs `body` with a new scratch directory, and removes the directory once
+// `body` has ended, also when it throws. A `startRunner` call that throws does
+// so before the `try` that stops the runner, so that `try` cannot remove it.
+async function withScratch(body) {
+  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  try {
+    return await body(scratch)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
 // Starts a node process that runs `commands` through the module at `helper`,
 // as the test process does, with `tmp` as its temp dir, so the scratch
 // directories it makes are the ones `scratchDirs(tmp)` lists. Its stderr is
@@ -333,23 +345,42 @@ async function documentedPid(runner, pidFile, within) {
   assert.fail(`the documented command did not record its process id ${reason}; the runner's stderr:\n${runner.stderr()}`)
 }
 
-test('a runner that fails to start fails at once and shows its stderr', { timeout: 5_000 }, async () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
-  const pidFile = join(scratch, 'pid')
-  const runner = startRunner(
-    new URL('./no-such-module.mjs', import.meta.url).href,
-    `node -e '${neverExits(pidFile)}'`,
-    scratch,
-  )
-  try {
-    await assert.rejects(
-      documentedPid(runner, pidFile, 10_000),
-      /did not record its process id before the runner exited 1; the runner's stderr:\n[\s\S]*Cannot find module/,
+test('a runner that fails to start fails at once and shows its stderr', { timeout: 5_000 }, () =>
+  withScratch(async (scratch) => {
+    const pidFile = join(scratch, 'pid')
+    const runner = startRunner(
+      new URL('./no-such-module.mjs', import.meta.url).href,
+      `node -e '${neverExits(pidFile)}'`,
+      scratch,
     )
-  } finally {
-    await stopRunner(runner)
-    rmSync(scratch, { recursive: true, force: true })
-  }
+    try {
+      await assert.rejects(
+        documentedPid(runner, pidFile, 10_000),
+        /did not record its process id before the runner exited 1; the runner's stderr:\n[\s\S]*Cannot find module/,
+      )
+    } finally {
+      await stopRunner(runner)
+    }
+  }),
+)
+
+// The cleanup of a test whose `startRunner` call throws, here because it is
+// given no temp dir for the runner.
+test('a test whose runner cannot be started removes its scratch directory', async () => {
+  const helper = new URL('./run-as-documented.mjs', import.meta.url).href
+  let scratch
+  let existed = false
+  await assert.rejects(
+    withScratch((dir) => {
+      scratch = dir
+      // Asked while the test would use it, asserted last.
+      existed = existsSync(dir)
+      startRunner(helper, 'echo done')
+    }),
+    /startRunner was not given the temp dir for the runner/,
+  )
+  assert.ok(existed, 'the test was given no scratch directory')
+  assert.ok(!existsSync(scratch), `the scratch directory ${scratch} was left behind`)
 })
 
 // Whether process `pid` leads a process group. A group has the id of the
@@ -373,26 +404,54 @@ function leadsGroup(pid) {
 // replacing itself with it. As a child of bash it stops only if the whole
 // group is stopped; as the group leader it would also stop if bash alone were.
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  test(`a ${signal} to the test process stops the documented commands it is running`, async () => {
-    const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  test(`a ${signal} to the test process stops the documented commands it is running`, () =>
+    withScratch(async (scratch) => {
+      const pidFile = join(scratch, 'pid')
+      const helper = new URL('./run-as-documented.mjs', import.meta.url).href
+      const runner = startRunner(helper, `node -e '${neverExits(pidFile)}'\necho done`, scratch)
+      let stillRuns = 0
+      try {
+        const pid = await documentedPid(runner, pidFile, 10_000)
+        // Asked while it runs, asserted last: a failure before the signal is
+        // sent would leave it running.
+        const ledGroup = leadsGroup(pid)
+        const dirsWhileRunning = scratchDirs(scratch)
+        runner.child.kill(signal)
+        // The message is built after `ended` resolves, so it holds all of stderr.
+        assert.equal(await runner.ended, signal, `the test process did not end on ${signal}; its stderr:\n${runner.stderr()}`)
+        if (!(await exits(pid, 5_000))) stillRuns = pid
+        assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
+        assert.ok(!ledGroup, `process ${pid} led the process group, so its stopping does not show the group was stopped`)
+        assert.equal(dirsWhileRunning.length, 1, `the runner had ${dirsWhileRunning.length} scratch directories, not 1`)
+        assert.deepEqual(scratchDirs(scratch), [], `the test process did not remove its scratch directory on ${signal}`)
+      } finally {
+        if (stillRuns > 0) {
+          try {
+            process.kill(stillRuns, 'SIGKILL')
+          } catch {}
+        }
+        await stopRunner(runner)
+      }
+    }),
+  )
+}
+
+// The cleanup a signal test runs when it fails before it sends its signal, for
+// example because the process id was not recorded in time.
+test('a runner stopped while it runs stops the documented commands it started', () =>
+  withScratch(async (scratch) => {
     const pidFile = join(scratch, 'pid')
     const helper = new URL('./run-as-documented.mjs', import.meta.url).href
     const runner = startRunner(helper, `node -e '${neverExits(pidFile)}'\necho done`, scratch)
     let stillRuns = 0
     try {
       const pid = await documentedPid(runner, pidFile, 10_000)
-      // Asked while it runs, asserted last: a failure before the signal is
-      // sent would leave it running.
-      const ledGroup = leadsGroup(pid)
       const dirsWhileRunning = scratchDirs(scratch)
-      runner.child.kill(signal)
-      // The message is built after `ended` resolves, so it holds all of stderr.
-      assert.equal(await runner.ended, signal, `the test process did not end on ${signal}; its stderr:\n${runner.stderr()}`)
+      await stopRunner(runner)
       if (!(await exits(pid, 5_000))) stillRuns = pid
       assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
-      assert.ok(!ledGroup, `process ${pid} led the process group, so its stopping does not show the group was stopped`)
       assert.equal(dirsWhileRunning.length, 1, `the runner had ${dirsWhileRunning.length} scratch directories, not 1`)
-      assert.deepEqual(scratchDirs(scratch), [], `the test process did not remove its scratch directory on ${signal}`)
+      assert.deepEqual(scratchDirs(scratch), [], 'the stopped runner did not remove its scratch directory')
     } finally {
       if (stillRuns > 0) {
         try {
@@ -400,37 +459,9 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
         } catch {}
       }
       await stopRunner(runner)
-      rmSync(scratch, { recursive: true, force: true })
     }
-  })
-}
-
-// The cleanup a signal test runs when it fails before it sends its signal, for
-// example because the process id was not recorded in time.
-test('a runner stopped while it runs stops the documented commands it started', async () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
-  const pidFile = join(scratch, 'pid')
-  const helper = new URL('./run-as-documented.mjs', import.meta.url).href
-  const runner = startRunner(helper, `node -e '${neverExits(pidFile)}'\necho done`, scratch)
-  let stillRuns = 0
-  try {
-    const pid = await documentedPid(runner, pidFile, 10_000)
-    const dirsWhileRunning = scratchDirs(scratch)
-    await stopRunner(runner)
-    if (!(await exits(pid, 5_000))) stillRuns = pid
-    assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
-    assert.equal(dirsWhileRunning.length, 1, `the runner had ${dirsWhileRunning.length} scratch directories, not 1`)
-    assert.deepEqual(scratchDirs(scratch), [], 'the stopped runner did not remove its scratch directory')
-  } finally {
-    if (stillRuns > 0) {
-      try {
-        process.kill(stillRuns, 'SIGKILL')
-      } catch {}
-    }
-    await stopRunner(runner)
-    rmSync(scratch, { recursive: true, force: true })
-  }
-})
+  }),
+)
 
 // A helper for startRunner whose runAsDocumented ignores SIGTERM and never
 // returns. It takes the name of a file in place of commands and records the
@@ -445,21 +476,21 @@ export function runAsDocumented(pidFile) {
   return new Promise(() => {})
 }`)}`
 
-test('a runner that ignores SIGTERM is killed once the time to stop has passed', { timeout: 10_000 }, async () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
-  const pidFile = join(scratch, 'pid')
-  const runner = startRunner(ignoresSigterm, pidFile, scratch)
-  try {
-    assert.equal(await documentedPid(runner, pidFile, 5_000), runner.child.pid)
-    await stopRunner(runner, 500)
-    const ended = await Promise.race([runner.ended, sleep(5_000, 'still running', { ref: false })])
-    assert.equal(ended, 'SIGKILL', `the runner ignored SIGTERM and was not killed; its stderr:\n${runner.stderr()}`)
-  } finally {
-    // stopRunner is what this test checks, so it is not trusted to clean up.
-    if (runner.child.exitCode === null && runner.child.signalCode === null) runner.child.kill('SIGKILL')
-    rmSync(scratch, { recursive: true, force: true })
-  }
-})
+test('a runner that ignores SIGTERM is killed once the time to stop has passed', { timeout: 10_000 }, () =>
+  withScratch(async (scratch) => {
+    const pidFile = join(scratch, 'pid')
+    const runner = startRunner(ignoresSigterm, pidFile, scratch)
+    try {
+      assert.equal(await documentedPid(runner, pidFile, 5_000), runner.child.pid)
+      await stopRunner(runner, 500)
+      const ended = await Promise.race([runner.ended, sleep(5_000, 'still running', { ref: false })])
+      assert.equal(ended, 'SIGKILL', `the runner ignored SIGTERM and was not killed; its stderr:\n${runner.stderr()}`)
+    } finally {
+      // stopRunner is what this test checks, so it is not trusted to clean up.
+      if (runner.child.exitCode === null && runner.child.signalCode === null) runner.child.kill('SIGKILL')
+    }
+  }),
+)
 
 test('the documented commands run through bash, so shell expansion applies', async () => {
   const lines = [
