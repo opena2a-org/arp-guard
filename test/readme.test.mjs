@@ -91,10 +91,13 @@ function runAsDocumented(commands, { timeout = 30_000 } = {}) {
       throw new Error(`the documented commands did not exit within ${timeout} ms`)
     }
     if (run.error) throw run.error
+    if (run.status !== 0) {
+      throw new Error(`the documented commands exited ${run.status ?? run.signal}:\n${run.stderr}`)
+    }
     // A reader sees stderr too: bash reports a failed expansion there and
     // carries on, so stderr output fails the run even when the exit status is 0.
-    if (run.status !== 0 || run.stderr !== '') {
-      throw new Error(`the documented commands exited ${run.status ?? run.signal}:\n${run.stderr}`)
+    if (run.stderr !== '') {
+      throw new Error(`the documented commands exited 0 but printed to stderr:\n${run.stderr}`)
     }
     return run.stdout.replace(/\n$/, '').split('\n')
   } finally {
@@ -147,6 +150,18 @@ test('documented commands that never exit fail instead of hanging', () => {
     () => runAsDocumented('node -e "setInterval(() => {}, 1000)"', { timeout: 1_000 }),
     /did not exit within 1000 ms/,
   )
+})
+
+test('documented commands that exit non-zero fail with their exit status', () => {
+  assert.throws(() => runAsDocumented('echo probe-stderr >&2; exit 3'), {
+    message: 'the documented commands exited 3:\nprobe-stderr\n',
+  })
+})
+
+test('documented commands that exit 0 and print to stderr fail with a stderr message', () => {
+  assert.throws(() => runAsDocumented('echo probe-stderr >&2'), {
+    message: 'the documented commands exited 0 but printed to stderr:\nprobe-stderr\n',
+  })
 })
 
 test('the documented commands run through bash, so shell expansion applies', () => {
