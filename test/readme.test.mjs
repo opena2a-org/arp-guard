@@ -292,6 +292,19 @@ function startRunner(helper, commands) {
   return { child, ended, stderr: () => stderr }
 }
 
+// Stops `runner` unless it has ended. SIGTERM first: the runner's handler stops
+// the process groups of the documented commands it runs. No process can handle
+// a SIGKILL, so it would leave them running; it is sent only if the runner
+// still runs after `within` ms.
+async function stopRunner(runner, within = 5_000) {
+  if (runner.child.exitCode !== null || runner.child.signalCode !== null) return
+  runner.child.kill('SIGTERM')
+  // Unreferenced, so a runner that ends at once does not hold this process
+  // open for the rest of `within`.
+  const limit = sleep(within, false, { ref: false })
+  if (!(await Promise.race([runner.ended.then(() => true), limit]))) runner.child.kill('SIGKILL')
+}
+
 // Resolves to the process id `pidFile` records. Fails, with the runner's
 // stderr, as soon as the runner ends without one, or after `within` ms.
 async function documentedPid(runner, pidFile, within) {
@@ -318,7 +331,7 @@ test('a runner that fails to start fails at once and shows its stderr', { timeou
       /did not record its process id before the runner exited 1; the runner's stderr:\n[\s\S]*Cannot find module/,
     )
   } finally {
-    runner.child.kill('SIGKILL')
+    await stopRunner(runner)
     rmSync(scratch, { recursive: true, force: true })
   }
 })
@@ -367,11 +380,35 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
           process.kill(stillRuns, 'SIGKILL')
         } catch {}
       }
-      runner.child.kill('SIGKILL')
+      await stopRunner(runner)
       rmSync(scratch, { recursive: true, force: true })
     }
   })
 }
+
+// The cleanup a signal test runs when it fails before it sends its signal, for
+// example because the process id was not recorded in time.
+test('a runner stopped while it runs stops the documented commands it started', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  const pidFile = join(scratch, 'pid')
+  const helper = new URL('./run-as-documented.mjs', import.meta.url).href
+  const runner = startRunner(helper, `node -e '${neverExits(pidFile)}'\necho done`)
+  let stillRuns = 0
+  try {
+    const pid = await documentedPid(runner, pidFile, 10_000)
+    await stopRunner(runner)
+    if (!(await exits(pid, 5_000))) stillRuns = pid
+    assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
+  } finally {
+    if (stillRuns > 0) {
+      try {
+        process.kill(stillRuns, 'SIGKILL')
+      } catch {}
+    }
+    await stopRunner(runner)
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
 
 test('the documented commands run through bash, so shell expansion applies', async () => {
   const lines = [
