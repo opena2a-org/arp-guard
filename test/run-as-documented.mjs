@@ -15,12 +15,13 @@ import { fileURLToPath } from 'node:url'
 
 export const root = realpathSync(fileURLToPath(new URL('..', import.meta.url)))
 
-// The process groups of the runs still going. Each leads a group of its own,
-// outside the terminal's foreground group, so a Ctrl-C at the terminal reaches
-// this process but not them. Stop them before this process ends, then end the
-// way the signal would have ended it.
+// The process groups of the runs still going. Each leads a session and a group
+// of its own, outside the terminal's foreground group, so a Ctrl-C at the
+// terminal, or the SIGHUP sent when the terminal closes, reaches this process
+// but not them. Stop them before this process ends, then end the way the signal
+// would have ended it.
 const running = new Set()
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.once(signal, () => {
     for (const pid of running) {
       try {

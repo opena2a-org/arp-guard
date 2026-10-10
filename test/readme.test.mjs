@@ -291,14 +291,15 @@ function leadsGroup(pid) {
   }
 }
 
-// The documented commands lead a process group of their own, outside the
-// terminal's foreground group, so a Ctrl-C at the terminal reaches only the
-// test process. It stops them before it ends.
+// The documented commands lead a session and process group of their own,
+// outside the terminal's foreground group, so a Ctrl-C at the terminal, or the
+// SIGHUP sent when the terminal closes, reaches only the test process. It stops
+// them before it ends.
 //
 // The never-exiting command is not the last one, so bash forks it instead of
 // replacing itself with it. As a child of bash it stops only if the whole
 // group is stopped; as the group leader it would also stop if bash alone were.
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   test(`a ${signal} to the test process stops the documented commands it is running`, async () => {
     const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
     const pidFile = join(scratch, 'pid')
