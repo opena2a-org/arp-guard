@@ -216,69 +216,6 @@ function neverExits(pidFile) {
   return `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`
 }
 
-test('a never-exiting command that is not the last one stops with the run', async () => {
-  // bash forks every command of the block but the last, so this node process is
-  // a child of bash, not bash itself, and it outlives bash if only bash is stopped.
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
-  const pidFile = join(scratch, 'pid')
-  let stillRuns = 0
-  try {
-    await assert.rejects(
-      runAsDocumented(`node -e '${neverExits(pidFile)}'\necho done`, { timeout: 3_000 }),
-      /did not exit within 3000 ms/,
-    )
-    assert.ok(existsSync(pidFile), 'the never-exiting command did not start before the time limit')
-    const pid = Number(readFileSync(pidFile, 'utf8'))
-    assert.ok(pid > 0, 'the never-exiting command did not record its process id')
-    // Only a process seen running is stopped: once it has exited, its id can
-    // belong to an unrelated process.
-    if (!(await exits(pid, 5_000))) stillRuns = pid
-    assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
-  } finally {
-    if (stillRuns > 0) {
-      try {
-        process.kill(stillRuns, 'SIGKILL')
-      } catch {}
-    }
-    rmSync(scratch, { recursive: true, force: true })
-  }
-})
-
-// Documented commands that start a process in a session of its own, which
-// inherits stdout and stderr and never exits, then print `done`. The time limit
-// does not stop that process, so `t.after` does, also when the test is
-// cancelled at its own timeout. With `unref` the node process that starts it
-// exits at once, and bash with it; otherwise node waits for it, and bash for node.
-function startsProcessOutsideTheGroup(t, { unref }) {
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
-  const pidFile = join(scratch, 'pid')
-  t.after(async () => {
-    const pid = await recordedPid(pidFile, 0)
-    if (pid > 0 && !(await exits(pid, 0))) {
-      try {
-        process.kill(pid, 'SIGKILL')
-      } catch {}
-    }
-    rmSync(scratch, { recursive: true, force: true })
-  })
-  const start = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(neverExits(pidFile))}], { detached: true, stdio: "inherit" })${unref ? '.unref()' : ''}`
-  return `node -e '${start}'\necho done`
-}
-
-test('a run ends at the time limit while a process outside its group holds stdout', { timeout: 10_000 }, async (t) => {
-  await assert.rejects(
-    runAsDocumented(startsProcessOutsideTheGroup(t, { unref: false }), { timeout: 2_000 }),
-    /did not exit within 2000 ms/,
-  )
-})
-
-test('a run whose commands exited while a process they started holds stdout says so', { timeout: 10_000 }, async (t) => {
-  await assert.rejects(runAsDocumented(startsProcessOutsideTheGroup(t, { unref: true }), { timeout: 2_000 }), {
-    message:
-      'the documented commands exited, but a process they started still held stdout or stderr open after 2000 ms',
-  })
-})
-
 // Runs `body` with a new scratch directory, and removes the directory once
 // `body` has ended, also when it throws. A `startRunner` call that throws does
 // so before the `try` that stops the runner, so that `try` cannot remove it.
@@ -290,6 +227,93 @@ async function withScratch(body) {
     rmSync(scratch, { recursive: true, force: true })
   }
 }
+
+// A scratch directory made anywhere but `withScratch` is removed only if
+// nothing between its creation and its own cleanup throws.
+test('the tests make their scratch directories only through withScratch', () => {
+  const source = readFileSync(new URL(import.meta.url), 'utf8')
+  const start = source.indexOf('\nasync function withScratch(')
+  const end = source.indexOf('\n}\n', start)
+  assert.ok(start >= 0 && end > start, 'withScratch was not found')
+  const sites = [...source.matchAll(/\bmkdtempSync\(/g)].map(({ index }) => index)
+  const outside = sites
+    .filter((index) => index < start || index > end)
+    .map((index) => source.slice(0, index).split('\n').length)
+  assert.equal(sites.length - outside.length, 1, 'withScratch does not make its scratch directory')
+  assert.deepEqual(outside, [], `a scratch directory is made outside withScratch, at line ${outside.join(', line ')}`)
+})
+
+test('a never-exiting command that is not the last one stops with the run', () =>
+  withScratch(async (scratch) => {
+    // bash forks every command of the block but the last, so this node process is
+    // a child of bash, not bash itself, and it outlives bash if only bash is stopped.
+    const pidFile = join(scratch, 'pid')
+    let stillRuns = 0
+    try {
+      await assert.rejects(
+        runAsDocumented(`node -e '${neverExits(pidFile)}'\necho done`, { timeout: 3_000 }),
+        /did not exit within 3000 ms/,
+      )
+      assert.ok(existsSync(pidFile), 'the never-exiting command did not start before the time limit')
+      const pid = Number(readFileSync(pidFile, 'utf8'))
+      assert.ok(pid > 0, 'the never-exiting command did not record its process id')
+      // Only a process seen running is stopped: once it has exited, its id can
+      // belong to an unrelated process.
+      if (!(await exits(pid, 5_000))) stillRuns = pid
+      assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
+    } finally {
+      if (stillRuns > 0) {
+        try {
+          process.kill(stillRuns, 'SIGKILL')
+        } catch {}
+      }
+    }
+  }),
+)
+
+// Runs `body` with documented commands that start a process in a session of
+// its own, which inherits stdout and stderr and never exits, then print `done`.
+// With `unref` the node process that starts it exits at once, and bash with it;
+// otherwise node waits for it, and bash for node. The time limit does not stop
+// that process, so it is stopped once `body` has ended, before the scratch
+// directory that holds its process id is removed, and by `t.after` when the
+// test is cancelled at its own timeout while `body` still runs.
+function withProcessOutsideTheGroup(t, { unref }, body) {
+  return withScratch(async (scratch) => {
+    const pidFile = join(scratch, 'pid')
+    // Only a process seen running is stopped.
+    const stop = async () => {
+      const pid = await recordedPid(pidFile, 0)
+      if (pid > 0 && !(await exits(pid, 0))) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {}
+      }
+    }
+    t.after(stop)
+    const start = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(neverExits(pidFile))}], { detached: true, stdio: "inherit" })${unref ? '.unref()' : ''}`
+    try {
+      return await body(`node -e '${start}'\necho done`)
+    } finally {
+      await stop()
+    }
+  })
+}
+
+test('a run ends at the time limit while a process outside its group holds stdout', { timeout: 10_000 }, (t) =>
+  withProcessOutsideTheGroup(t, { unref: false }, (commands) =>
+    assert.rejects(runAsDocumented(commands, { timeout: 2_000 }), /did not exit within 2000 ms/),
+  ),
+)
+
+test('a run whose commands exited while a process they started holds stdout says so', { timeout: 10_000 }, (t) =>
+  withProcessOutsideTheGroup(t, { unref: true }, (commands) =>
+    assert.rejects(runAsDocumented(commands, { timeout: 2_000 }), {
+      message:
+        'the documented commands exited, but a process they started still held stdout or stderr open after 2000 ms',
+    }),
+  ),
+)
 
 // Starts a node process that runs `commands` through the module at `helper`,
 // as the test process does, with `tmp` as its temp dir, so the scratch
