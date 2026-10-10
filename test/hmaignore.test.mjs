@@ -98,6 +98,24 @@ const entries = readFileSync(path.join(root, '.hmaignore'), 'utf8')
   .map((text, index) => ({ at: `.hmaignore:${index + 1}`, text, parsed: parseLine(text) }))
 const rules = entries.filter(({ parsed }) => parsed.kind !== 'blank' && parsed.kind !== 'comment')
 
+// What the comment at the top of .hmaignore says one rule form does: the text
+// after the form on its own line, then the indented lines under it.
+function describedAs(form) {
+  const comment = []
+  for (const { text } of entries) {
+    if (!text.startsWith('#')) break
+    comment.push(text.slice(1))
+  }
+  const start = comment.findIndex((line) => line.match(/^ {3}(\S+)/)?.[1] === form)
+  if (start === -1) return null
+  const said = [comment[start].replace(/^ {3}\S+\s+/, '')]
+  for (const line of comment.slice(start + 1)) {
+    if (!/^ {4,}\S/.test(line)) break
+    said.push(line.trim())
+  }
+  return said.join(' ')
+}
+
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
   for (const line of [
     '# a comment',
@@ -179,6 +197,19 @@ test('no rule has expired', () => {
     const lapses = Date.parse(`${parsed.expires}T00:00:00Z`) + 24 * 60 * 60 * 1000
     assert.ok(lapses > now, `${at} expired on ${parsed.expires}; renew it with a new reason or remove it`)
   }
+})
+
+// hackmyagent (0.33.x) applies a path rule to the findings after the checks have
+// run: with `.hmaignore` holding only `package.json`, `secure` reports as many
+// files read by static checks as with no such rule. The report's Scope line
+// counts the excluded findings by severity and names no path.
+test('the comment says a path rule leaves the file read and takes its findings out of the score', () => {
+  const said = describedAs('path')
+  assert.ok(said, 'the comment at the top of .hmaignore does not describe the `path` form')
+  assert.doesNotMatch(said, /leaves? the scan/, `a path rule does not take the file out of the scan: "${said}"`)
+  assert.doesNotMatch(said, /named on the report's Scope line/, `the Scope line counts findings and names no path: "${said}"`)
+  assert.match(said, /\bstill read\b/, `the \`path\` form should say the file is still read: "${said}"`)
+  assert.match(said, /findings leave the score and the exit code/, `the \`path\` form should say its findings leave the score and the exit code: "${said}"`)
 })
 
 test('AIM-001 is left out on package.json only, with a reason and an expiry', () => {
