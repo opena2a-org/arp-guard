@@ -280,9 +280,10 @@ function scratchSites(source) {
   }
 }
 
-// Fails unless `source` names a function that makes a temporary directory in
-// `withScratch` and nowhere else. The name counts in a comment or a string as
-// well, so the message names the line, not a scratch directory made there.
+// Fails unless `source` names a function that makes a temporary directory once
+// in `withScratch` and nowhere else that `scratchSites` counts. The name counts
+// in a comment or a string as well, so the message names the line, not a
+// scratch directory made there.
 function assertScratchOnlyInWithScratch(source) {
   const { inside, outside } = scratchSites(source)
   assert.equal(inside, 1, 'withScratch does not make its scratch directory')
