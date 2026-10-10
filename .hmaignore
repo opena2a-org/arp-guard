@@ -1,0 +1,1 @@
+package.json:AIM-001 # arp-guard is a library that agents import, not an agent: it holds no identity to declare, and its "agent" keyword names what it protects
