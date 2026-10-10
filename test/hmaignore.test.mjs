@@ -21,6 +21,9 @@
 //     so `app/[slug]/page.tsx` is a path
 //   a path containing a space: `my dir/file`, `my dir:AIM-001 # reason`
 //   `expires:` in any case but lowercase: `!AIM-001 EXPIRES:2026-12-31`
+//   whitespace other than a space or tab before `expires:`, such as the
+//     no-break space in `src<U+00A0>expires:2026-12-31`; this check splits a
+//     rule on spaces and tabs only, so it reads that line as `path:CHECK-ID`
 //   a `#` with no reason after a `!CHECK-ID` or path rule: `!AIM-001 #`,
 //     `src/ #`
 //   a path with a colon in it, which this check reads as `path:CHECK-ID`:
@@ -49,9 +52,11 @@ function isDate(value) {
 // One line of .hmaignore: a blank line, a `#` comment, or one rule
 //   !CHECK-ID | path:CHECK-ID | path   [expires:YYYY-MM-DD]   [# reason]
 // The reason starts at the first `#` with a space or tab before it; any other
-// `#` is part of the rule text, as it is to hackmyagent. Spaces and tabs are
-// also the only separators between the parts of a rule, so other whitespace,
-// such as the no-break space in `src #bar`, is part of the path.
+// `#` is part of the rule text, as it is to hackmyagent, so other whitespace
+// before a `#`, such as the no-break space in `src #bar`, leaves the `#` in the
+// path. This check also splits the rule before the `#` on spaces and tabs
+// only, where hackmyagent takes `expires:` off the end after any whitespace;
+// the header names that form among the ones this check rejects.
 // Returns `{ error }` for a line hackmyagent would not apply as written, and for
 // a line in a form this check does not take (see the header).
 function parseLine(raw) {
@@ -176,6 +181,13 @@ const APPLIED_NOT_TAKEN = [
   ['app/[slug]/page.tsx', 'src/page?.ts', 'src/{a,b}/', 'src/a]b', 'src/a}b'],
   ['my dir/file', 'my dir:AIM-001 # reason'],
   ['!AIM-001 EXPIRES:2026-12-31', '!AIM-001 Expires:2026-12-31'],
+  [
+    'src expires:2026-12-31',
+    'src\vexpires:2026-12-31',
+    'src\fexpires:2026-12-31',
+    '!AIM-001 expires:2026-12-31',
+    'package.json:AIM-001 expires:2026-12-31 # reason',
+  ],
   ['!AIM-001 #', 'src/ #'],
   ['snapshot-10:30'],
 ]
@@ -195,8 +207,11 @@ test('the header names every form hackmyagent applies that the grammar check rej
     header.push(line.slice(2).trim())
   }
   const said = header.join(' ')
+  // The header writes a character outside printable ASCII, such as a no-break
+  // space, as `<U+00A0>`.
+  const shown = (line) => line.replace(/[^\x20-\x7e]/gu, (c) => `<U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}>`)
   for (const [example] of APPLIED_NOT_TAKEN) {
-    assert.ok(said.includes(`\`${example}\``), `the header at the top of this file does not name the form of \`${example}\``)
+    assert.ok(said.includes(`\`${shown(example)}\``), `the header at the top of this file does not name the form of \`${shown(example)}\``)
   }
 })
 
