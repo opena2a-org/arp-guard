@@ -15,17 +15,24 @@ import { fileURLToPath } from 'node:url'
 
 export const root = realpathSync(fileURLToPath(new URL('..', import.meta.url)))
 
-// The process groups of the runs still going. Each leads a session and a group
-// of its own, outside the terminal's foreground group, so a Ctrl-C at the
-// terminal, or the SIGHUP sent when the terminal closes, reaches this process
-// but not them. Stop them before this process ends, then end the way the signal
-// would have ended it.
-const running = new Set()
+// The process groups of the runs still going, each with the scratch directory
+// it runs in. Each leads a session and a group of its own, outside the
+// terminal's foreground group, so a Ctrl-C at the terminal, or the SIGHUP sent
+// when the terminal closes, reaches this process but not them. Stop them and
+// remove their directories before this process ends, since the `finally` that
+// removes a directory never runs once the signal ends this process, then end
+// the way the signal would have ended it.
+const running = new Map()
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.once(signal, () => {
-    for (const pid of running) {
+    for (const pid of running.keys()) {
       try {
         process.kill(-pid, 'SIGKILL')
+      } catch {}
+    }
+    for (const dir of running.values()) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
       } catch {}
     }
     if (process.listenerCount(signal) === 0) process.kill(process.pid, signal)
@@ -54,7 +61,7 @@ export async function runAsDocumented(commands, { timeout = 30_000 } = {}) {
         env: { PATH },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      if (child.pid) running.add(child.pid)
+      if (child.pid) running.set(child.pid, dir)
       const output = { stdout: '', stderr: '', timedOut: false, exitedBeforeLimit: false }
       child.stdout.setEncoding('utf8').on('data', (chunk) => (output.stdout += chunk))
       child.stderr.setEncoding('utf8').on('data', (chunk) => (output.stderr += chunk))
