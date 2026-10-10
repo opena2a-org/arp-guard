@@ -49,7 +49,9 @@ function isDate(value) {
 // One line of .hmaignore: a blank line, a `#` comment, or one rule
 //   !CHECK-ID | path:CHECK-ID | path   [expires:YYYY-MM-DD]   [# reason]
 // The reason starts at the first `#` with a space or tab before it; any other
-// `#` is part of the rule text, as it is to hackmyagent.
+// `#` is part of the rule text, as it is to hackmyagent. Spaces and tabs are
+// also the only separators between the parts of a rule, so other whitespace,
+// such as the no-break space in `src #bar`, is part of the path.
 // Returns `{ error }` for a line hackmyagent would not apply as written, and for
 // a line in a form this check does not take (see the header).
 function parseLine(raw) {
@@ -61,7 +63,7 @@ function parseLine(raw) {
   const hash = comment === null ? -1 : comment.index + 1
   const head = (hash === -1 ? line : line.slice(0, hash)).trim()
   const reason = hash === -1 ? null : line.slice(hash + 1).trim()
-  const tokens = head.split(/\s+/)
+  const tokens = head.split(/[ \t]+/)
   let expires = null
   if (tokens.length > 1 && tokens.at(-1).startsWith('expires:')) {
     expires = tokens.pop().slice('expires:'.length)
@@ -159,6 +161,10 @@ test('the grammar check accepts the forms this file uses and rejects lines outsi
 test('a `#` with no space or tab before it is part of the rule, not the start of a reason', () => {
   assert.deepEqual(parseLine('src#bar'), { kind: 'path', path: 'src#bar', expires: null, reason: null })
   assert.deepEqual(parseLine('src#bar # reason'), { kind: 'path', path: 'src#bar', expires: null, reason: 'reason' })
+  // hackmyagent (0.33.2) reads each of these as one path.
+  for (const line of ['src #bar', 'src\v#bar']) {
+    assert.deepEqual(parseLine(line), { kind: 'path', path: line, expires: null, reason: null }, `${JSON.stringify(line)} should parse as one path`)
+  }
 })
 
 // The forms hackmyagent applies that this check rejects, one form per row: the
