@@ -284,6 +284,9 @@ test('a run whose commands exited while a process they started holds stdout says
 // directories it makes are the ones `scratchDirs(tmp)` lists. Its stderr is
 // kept: a runner that fails to start says why there and nowhere else.
 function startRunner(helper, commands, tmp) {
+  // Without `tmp` the runner would start with no TMPDIR and make its scratch
+  // directories in the system temp dir, where `scratchDirs(tmp)` does not look.
+  assert.equal(typeof tmp, 'string', 'startRunner was not given the temp dir for the runner')
   const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
     env: { ...process.env, TMPDIR: tmp },
@@ -445,7 +448,7 @@ export function runAsDocumented(pidFile) {
 test('a runner that ignores SIGTERM is killed once the time to stop has passed', { timeout: 10_000 }, async () => {
   const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
   const pidFile = join(scratch, 'pid')
-  const runner = startRunner(ignoresSigterm, pidFile)
+  const runner = startRunner(ignoresSigterm, pidFile, scratch)
   try {
     assert.equal(await documentedPid(runner, pidFile, 5_000), runner.child.pid)
     await stopRunner(runner, 500)
