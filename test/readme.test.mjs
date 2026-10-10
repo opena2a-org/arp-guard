@@ -6,29 +6,27 @@
 // README, so the sample cannot drift from what the package does.
 //
 // The commands are README text, so they are never evaluated inside the test
-// process. They run the way a reader runs them: pasted into bash, in its own
-// process, in a directory where `require('arp-guard')` resolves to this
-// repository's build. They get PATH and nothing else from the runner's
-// environment, and a time limit, so a script that never exits fails the test
-// and leaves no process behind.
+// process: run-as-documented.mjs runs them the way a reader runs them, and
+// describes how.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
+import { root, runAsDocumented } from './run-as-documented.mjs'
 
-const root = realpathSync(fileURLToPath(new URL('..', import.meta.url)))
 const readme = readFileSync(join(root, 'README.md'), 'utf8').split('\n')
 
 const INSTALL = 'npm install arp-guard'
 
 // A code fence, as CommonMark defines it: three or more backticks or tildes,
-// indented at most three spaces.
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+// indented at most three spaces. With the `s` flag `.*` also takes a carriage
+// return or other line terminator left in the line, so `$` matches at once;
+// without it a long fence run followed by one backtracks quadratically.
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/s
 
 // Line numbers here are 1-based, as an editor shows them. Only a fence of the
 // opening character, at least as long and with nothing after it, closes a
@@ -85,71 +83,6 @@ function documentedCommands(command) {
   return commands
 }
 
-// Runs `commands` with bash in a scratch directory whose `node_modules/arp-guard`
-// is this repository, so the package resolves to `dist/index.js` exactly as an
-// installed copy would. `node` on the child's PATH is the one running the tests.
-// Resolves to the lines the commands printed to stdout; rejects if they time
-// out, exit non-zero or print to stderr.
-//
-// bash forks every command of the block but the last, so a command that never
-// exits can be a child of bash rather than bash itself. bash therefore leads its
-// own process group, and the time limit stops the whole group, not only bash.
-async function runAsDocumented(commands, { timeout = 30_000 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'arp-guard-readme-'))
-  try {
-    mkdirSync(join(dir, 'node_modules'))
-    symlinkSync(root, join(dir, 'node_modules', 'arp-guard'), 'junction')
-    const PATH = [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter)
-    const run = await new Promise((resolve, reject) => {
-      const child = spawn('bash', ['-c', commands], {
-        cwd: dir,
-        detached: true,
-        env: { PATH },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      const output = { stdout: '', stderr: '', timedOut: false }
-      child.stdout.setEncoding('utf8').on('data', (chunk) => (output.stdout += chunk))
-      child.stderr.setEncoding('utf8').on('data', (chunk) => (output.stderr += chunk))
-      const timer = setTimeout(() => {
-        output.timedOut = true
-        try {
-          // SIGKILL, so a command that handles SIGTERM cannot keep running.
-          process.kill(-child.pid, 'SIGKILL')
-        } catch (error) {
-          // ESRCH: every process of the group has already exited.
-          if (error.code !== 'ESRCH') reject(error)
-        }
-        // A process that left the group can still hold the pipes open; stop
-        // reading so the run ends once bash has exited.
-        child.stdout.destroy()
-        child.stderr.destroy()
-      }, timeout)
-      child.on('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
-      child.on('close', (status, signal) => {
-        clearTimeout(timer)
-        resolve({ ...output, status, signal })
-      })
-    })
-    if (run.timedOut) {
-      throw new Error(`the documented commands did not exit within ${timeout} ms`)
-    }
-    if (run.status !== 0) {
-      throw new Error(`the documented commands exited ${run.status ?? run.signal}:\n${run.stderr}`)
-    }
-    // A reader sees stderr too: bash reports a failed expansion there and
-    // carries on, so stderr output fails the run even when the exit status is 0.
-    if (run.stderr !== '') {
-      throw new Error(`the documented commands exited 0 but printed to stderr:\n${run.stderr}`)
-    }
-    return run.stdout.replace(/\n$/, '').split('\n')
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
 test('a runnable command and its output end before line 30', () => {
   const { command, output } = quickStart(readme)
   assert.ok(command.start < 30, `the install command block starts at line ${command.start}`)
@@ -180,6 +113,33 @@ test('a code block closes only on a fence of its own character, at least as long
 test('an unclosed code block fails the check instead of hiding the sections after it', () => {
   const lines = ['## Quick Start', '```bash', '## comment', '## Next']
   assert.throws(() => sections(lines), /``` fence opened at line 2 is never closed/)
+})
+
+test('a fence indented up to three spaces opens a code block, and four spaces do not', () => {
+  const lines = ['## Quick Start', '   ```', '## comment', '```', '    ```', '## Next']
+  assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('a backtick after a ``` fence makes the line inline code, while a ~~~ fence allows one', () => {
+  const lines = ['## Quick Start', '```a`b', '~~~a`b', '## comment', '~~~', '## Next']
+  assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('a fence with text after it does not close a code block', () => {
+  const lines = ['## Quick Start', '```', '``` y', '## comment', '```', '## Next']
+  assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('a long fence run that ends in a carriage return is read in linear time', () => {
+  const run = '`'.repeat(200_000)
+  const started = Date.now()
+  const blocks = fencedBlocks([`${run}\r`, 'x', run])
+  const elapsed = Date.now() - started
+  assert.deepEqual(
+    blocks.map(({ start, end }) => [start, end]),
+    [[1, 3]],
+  )
+  assert.ok(elapsed < 1_000, `reading the fences took ${elapsed} ms`)
 })
 
 test('the documented script runs in its own process against the built package', async () => {
@@ -240,33 +200,116 @@ async function exits(pid, within) {
   }
 }
 
+// Resolves to the process id `file` records once it records one, or 0 if it
+// records none within `within` ms.
+async function recordedPid(file, within) {
+  const deadline = Date.now() + within
+  for (;;) {
+    const pid = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0
+    if (pid > 0 || Date.now() >= deadline) return pid
+    await sleep(50)
+  }
+}
+
+// A node -e script that records its process id in `pidFile` and never exits.
+function neverExits(pidFile) {
+  return `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`
+}
+
 test('a never-exiting command that is not the last one stops with the run', async () => {
   // bash forks every command of the block but the last, so this node process is
   // a child of bash, not bash itself, and it outlives bash if only bash is stopped.
   const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
   const pidFile = join(scratch, 'pid')
-  let pid = 0
+  let stillRuns = 0
   try {
     await assert.rejects(
-      runAsDocumented(
-        `node -e 'require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)'\necho done`,
-        { timeout: 3_000 },
-      ),
+      runAsDocumented(`node -e '${neverExits(pidFile)}'\necho done`, { timeout: 3_000 }),
       /did not exit within 3000 ms/,
     )
     assert.ok(existsSync(pidFile), 'the never-exiting command did not start before the time limit')
-    pid = Number(readFileSync(pidFile, 'utf8'))
+    const pid = Number(readFileSync(pidFile, 'utf8'))
     assert.ok(pid > 0, 'the never-exiting command did not record its process id')
-    assert.ok(await exits(pid, 5_000), `process ${pid}, started by the documented commands, still runs`)
+    // Only a process seen running is stopped: once it has exited, its id can
+    // belong to an unrelated process.
+    if (!(await exits(pid, 5_000))) stillRuns = pid
+    assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
   } finally {
-    if (pid > 0) {
+    if (stillRuns > 0) {
       try {
-        process.kill(pid, 'SIGKILL')
+        process.kill(stillRuns, 'SIGKILL')
       } catch {}
     }
     rmSync(scratch, { recursive: true, force: true })
   }
 })
+
+// Documented commands that start a process in a session of its own, which
+// inherits stdout and stderr and never exits, then print `done`. The time limit
+// does not stop that process, so `t.after` does, also when the test is
+// cancelled at its own timeout. With `unref` the node process that starts it
+// exits at once, and bash with it; otherwise node waits for it, and bash for node.
+function startsProcessOutsideTheGroup(t, { unref }) {
+  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  const pidFile = join(scratch, 'pid')
+  t.after(async () => {
+    const pid = await recordedPid(pidFile, 0)
+    if (pid > 0 && !(await exits(pid, 0))) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {}
+    }
+    rmSync(scratch, { recursive: true, force: true })
+  })
+  const start = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(neverExits(pidFile))}], { detached: true, stdio: "inherit" })${unref ? '.unref()' : ''}`
+  return `node -e '${start}'\necho done`
+}
+
+test('a run ends at the time limit while a process outside its group holds stdout', { timeout: 10_000 }, async (t) => {
+  await assert.rejects(
+    runAsDocumented(startsProcessOutsideTheGroup(t, { unref: false }), { timeout: 2_000 }),
+    /did not exit within 2000 ms/,
+  )
+})
+
+test('a run whose commands exited while a process they started holds stdout says so', { timeout: 10_000 }, async (t) => {
+  await assert.rejects(runAsDocumented(startsProcessOutsideTheGroup(t, { unref: true }), { timeout: 2_000 }), {
+    message:
+      'the documented commands exited, but a process they started still held stdout or stderr open after 2000 ms',
+  })
+})
+
+// The documented commands lead a process group of their own, outside the
+// terminal's foreground group, so a Ctrl-C at the terminal reaches only the
+// test process. It stops them before it ends.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(`a ${signal} to the test process stops the documented commands it is running`, async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+    const pidFile = join(scratch, 'pid')
+    const helper = new URL('./run-as-documented.mjs', import.meta.url).href
+    const commands = `node -e '${neverExits(pidFile)}'`
+    const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
+    const runner = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'ignore' })
+    const ended = new Promise((resolve) => runner.on('close', (status, received) => resolve(received ?? status)))
+    let stillRuns = 0
+    try {
+      const pid = await recordedPid(pidFile, 10_000)
+      assert.ok(pid > 0, 'the documented command did not record its process id')
+      runner.kill(signal)
+      assert.equal(await ended, signal, `the test process did not end on ${signal}`)
+      if (!(await exits(pid, 5_000))) stillRuns = pid
+      assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
+    } finally {
+      if (stillRuns > 0) {
+        try {
+          process.kill(stillRuns, 'SIGKILL')
+        } catch {}
+      }
+      runner.kill('SIGKILL')
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+}
 
 test('the documented commands run through bash, so shell expansion applies', async () => {
   const lines = [
