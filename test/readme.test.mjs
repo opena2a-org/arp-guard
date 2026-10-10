@@ -272,7 +272,8 @@ test('a never-exiting command that is not the last one stops with the run', () =
 )
 
 // Runs `body` with documented commands that start a process in a session of
-// its own, which inherits stdout and stderr and never exits, then print `done`.
+// its own, which inherits stdout and stderr and never exits, then print `done`,
+// and with the file where that process records its process id.
 // With `unref` the node process that starts it exits at once, and bash with it;
 // otherwise node waits for it, and bash for node. The time limit does not stop
 // that process, so it is stopped once `body` has ended, before the scratch
@@ -293,7 +294,7 @@ function withProcessOutsideTheGroup(t, { unref }, body) {
     t.after(stop)
     const start = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(neverExits(pidFile))}], { detached: true, stdio: "inherit" })${unref ? '.unref()' : ''}`
     try {
-      return await body(`node -e '${start}'\necho done`)
+      return await body(`node -e '${start}'\necho done`, pidFile)
     } finally {
       await stop()
     }
@@ -314,6 +315,30 @@ test('a run whose commands exited while a process they started holds stdout says
     }),
   ),
 )
+
+// Once withProcessOutsideTheGroup has returned, nothing else stops the process
+// it started: `t.after` reads its id from the scratch directory, which is gone
+// by then.
+test('the process started outside the group has exited once the test using it has ended', { timeout: 15_000 }, async (t) => {
+  let pid = 0
+  let stillRuns = 0
+  try {
+    await withProcessOutsideTheGroup(t, { unref: true }, async (commands, pidFile) => {
+      await assert.rejects(runAsDocumented(commands, { timeout: 1_000 }), /still held stdout or stderr open/)
+      pid = await recordedPid(pidFile, 5_000)
+    })
+    assert.ok(pid > 0, 'the process outside the group did not record its process id')
+    // Only a process seen running is stopped.
+    if (!(await exits(pid, 5_000))) stillRuns = pid
+    assert.equal(stillRuns, 0, `process ${pid}, started outside the group, still runs`)
+  } finally {
+    if (stillRuns > 0) {
+      try {
+        process.kill(stillRuns, 'SIGKILL')
+      } catch {}
+    }
+  }
+})
 
 // Starts a node process that runs `commands` through the module at `helper`,
 // as the test process does, with `tmp` as its temp dir, so the scratch
