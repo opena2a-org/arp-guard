@@ -1,1 +1,18 @@
-package.json:AIM-001 # arp-guard is a library that agents import, not an agent: it holds no identity to declare, and its "agent" keyword names what it protects
+# Read by `hackmyagent secure` (0.33.x). A line starting with `#` is a comment;
+# every other line is one rule:
+#   !CHECK-ID                the check is left off the list of findings but is
+#                            still scored, still in the verdict and the exit
+#                            code, and named on the report's Suppressed line.
+#   path                     the file or directory (no globs) leaves the scan,
+#                            the score and the exit code; named on the report's
+#                            Scope line.
+#   path:CHECK-ID # reason   that one check on that one path leaves the score
+#                            and the exit code; every other check still runs on
+#                            the path. The `# reason` is required on this form.
+# Any rule may carry `expires:YYYY-MM-DD`. Write it before the `#` of a reason:
+# after the `#` it is read as part of the reason and the rule never expires. The
+# rule applies through the named day (UTC); from the next day the line is
+# reported as an error and its findings return. A line hackmyagent cannot apply
+# is reported as a `.hmaignore:<line>` error and is not applied.
+
+package.json:AIM-001 expires:2026-12-31 # arp-guard is a library that agents import, not an agent; it runs under the identity of the agent that loads it and has none of its own to declare
