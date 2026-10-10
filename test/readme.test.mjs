@@ -279,15 +279,31 @@ test('a run whose commands exited while a process they started holds stdout says
   })
 })
 
+// Whether process `pid` leads a process group. A group has the id of the
+// process that leads it, and signal 0 only asks whether that group exists.
+function leadsGroup(pid) {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (error) {
+    if (error.code === 'ESRCH') return false
+    throw error
+  }
+}
+
 // The documented commands lead a process group of their own, outside the
 // terminal's foreground group, so a Ctrl-C at the terminal reaches only the
 // test process. It stops them before it ends.
+//
+// The never-exiting command is not the last one, so bash forks it instead of
+// replacing itself with it. As a child of bash it stops only if the whole
+// group is stopped; as the group leader it would also stop if bash alone were.
 for (const signal of ['SIGINT', 'SIGTERM']) {
   test(`a ${signal} to the test process stops the documented commands it is running`, async () => {
     const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
     const pidFile = join(scratch, 'pid')
     const helper = new URL('./run-as-documented.mjs', import.meta.url).href
-    const commands = `node -e '${neverExits(pidFile)}'`
+    const commands = `node -e '${neverExits(pidFile)}'\necho done`
     const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
     const runner = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'ignore' })
     const ended = new Promise((resolve) => runner.on('close', (status, received) => resolve(received ?? status)))
@@ -295,10 +311,14 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     try {
       const pid = await recordedPid(pidFile, 10_000)
       assert.ok(pid > 0, 'the documented command did not record its process id')
+      // Asked while it runs, asserted last: a failure before the signal is
+      // sent would leave it running.
+      const ledGroup = leadsGroup(pid)
       runner.kill(signal)
       assert.equal(await ended, signal, `the test process did not end on ${signal}`)
       if (!(await exits(pid, 5_000))) stillRuns = pid
       assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
+      assert.ok(!ledGroup, `process ${pid} led the process group, so its stopping does not show the group was stopped`)
     } finally {
       if (stillRuns > 0) {
         try {
