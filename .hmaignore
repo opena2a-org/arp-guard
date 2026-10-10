@@ -7,8 +7,10 @@
 #                            findings leave the score and the exit code, and are
 #                            counted by severity on the report's Scope line.
 #   path:CHECK-ID # reason   that one check on that one path leaves the score
-#                            and the exit code; every other check still runs on
-#                            the path. The `# reason` is required on this form.
+#                            and the exit code, and its findings are counted by
+#                            severity on the report's Scope line; every other
+#                            check still runs on the path. The `# reason` is
+#                            required on this form.
 # Any rule may carry `expires:YYYY-MM-DD`. Write it before the `#` of a reason:
 # after the `#` it is read as part of the reason and the rule never expires. The
 # rule applies through the named day (UTC); from the next day the line is
