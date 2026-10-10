@@ -30,13 +30,16 @@ function isDate(value) {
 
 // One line of .hmaignore: a blank line, a `#` comment, or one rule
 //   !CHECK-ID | path:CHECK-ID | path   [expires:YYYY-MM-DD]   [# reason]
+// The reason starts at the first `#` with a space or tab before it; any other
+// `#` is part of the rule text, as it is to hackmyagent.
 // Returns `{ error }` for a line hackmyagent would not apply as written.
 function parseLine(raw) {
   const line = raw.trim()
   if (!line) return { kind: 'blank' }
   if (line.startsWith('#')) return { kind: 'comment' }
 
-  const hash = line.indexOf('#')
+  const comment = /[ \t]#/.exec(line)
+  const hash = comment === null ? -1 : comment.index + 1
   const head = (hash === -1 ? line : line.slice(0, hash)).trim()
   const reason = hash === -1 ? null : line.slice(hash + 1).trim()
   const tokens = head.split(/\s+/)
@@ -92,6 +95,7 @@ test('the grammar check accepts the forms hackmyagent applies and rejects the on
     'src/',
     'package.json:AIM-001 # reason',
     'package.json:AIM-001 # a reason with # in it',
+    'package.json:AIM-001\t# reason',
     'package.json:AIM-001 expires:2026-12-31 # reason',
   ]) {
     assert.equal(parseLine(line).error, undefined, `"${line}" should parse`)
@@ -106,9 +110,16 @@ test('the grammar check accepts the forms hackmyagent applies and rejects the on
     'package.json:AIM-001 # reason expires:2026-12-31',
     'package.json:AIM-001 expires:2026-13-45 # reason',
     'package.json AIM-001',
+    'package.json:AIM-001# reason',
+    'package.json:AIM-001 expires:2026-12-31# reason',
   ]) {
     assert.ok(parseLine(line).error, `"${line}" should be rejected`)
   }
+})
+
+test('a `#` with no space or tab before it is part of the rule, not the start of a reason', () => {
+  assert.deepEqual(parseLine('src#bar'), { kind: 'path', path: 'src#bar', expires: null, reason: null })
+  assert.deepEqual(parseLine('src#bar # reason'), { kind: 'path', path: 'src#bar', expires: null, reason: 'reason' })
 })
 
 test('every line of .hmaignore is a comment or a rule hackmyagent applies as written', () => {
