@@ -292,13 +292,23 @@ test('the tests make their scratch directories only through withScratch', () => 
   assertScratchOnlyInWithScratch(readFileSync(new URL(import.meta.url), 'utf8'))
 })
 
-// This file with `added` as a new line above `neverExits`, where no scratch
-// directory is made, and the 1-based number of that line.
+// This file with `added` as new lines above `neverExits`, where no scratch
+// directory is made, and the 1-based number of the first of them.
 function addedAboveNeverExits(added) {
   const source = readFileSync(new URL(import.meta.url), 'utf8')
   const at = source.indexOf('\nfunction neverExits(')
   assert.ok(at >= 0, 'neverExits was not found')
   return { changed: `${source.slice(0, at)}\n${added}${source.slice(at)}`, line: source.slice(0, at).split('\n').length + 1 }
+}
+
+// This file with `added` as new lines at its end, and the 1-based number of the
+// first of them. No `*/` follows there, so a block comment read on to the last
+// `*/` instead of the first ends inside `added`, and the import clause that
+// holds it takes in the names after it. Above `neverExits` it would run on to a
+// `*/` further down and cover those names, which counts them either way.
+function addedAtEnd(added) {
+  const source = readFileSync(new URL(import.meta.url), 'utf8')
+  return { changed: `${source}${added}\n`, line: source.split('\n').length }
 }
 
 // The names are read from `withScratch`, so these tests name no such function
@@ -314,9 +324,13 @@ test('a scratch directory made under another name, or without the synchronous ca
     `import { ${synchronous} /* renamed */ as make } from 'node:fs'`,
     `import { ${synchronous} // renamed\n as make } from 'node:fs'`,
     `import { tmpdir /* ${synchronous} */ } from 'node:os'`,
+    `import { tmpdir /* a */ } from 'node:os'\n/* b */ ${synchronous}(z)`,
   ]) {
-    const { changed, line } = addedAboveNeverExits(added)
-    assert.deepEqual(scratchSites(changed), { inside: 1, outside: [line] }, `not counted: ${added}`)
+    for (const { changed, line } of [addedAboveNeverExits(added), addedAtEnd(added)]) {
+      // The line of `added` that names the function.
+      const named = line + added.slice(0, added.search(MAKES_SCRATCH)).split('\n').length - 1
+      assert.deepEqual(scratchSites(changed), { inside: 1, outside: [named] }, `not counted at line ${named}: ${added}`)
+    }
   }
 })
 
