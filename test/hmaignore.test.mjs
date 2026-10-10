@@ -146,16 +146,33 @@ function describedAs(form) {
   return said.join(' ')
 }
 
+// What is wrong with the description describedAs returned for a form, or null.
 // A form is set off from its description by two or more spaces, and the
-// description's own words by one: a wider gap in what describedAs returns
-// means part of the form was read as the description.
+// description's own words by one. A description that starts with `#` holds part
+// of the form, such as the `# reason` of `path:CHECK-ID # reason`. Two or more
+// spaces inside it are either part of the form read the same way or a double
+// space in the header's own words, so the message names the words on each side.
+function descriptionProblem(form, said) {
+  if (said.startsWith('#')) {
+    return `the description of \`${form}\` starts with \`#\`, so part of the form was read as its description: "${said}"`
+  }
+  const gap = / {2,}/.exec(said)
+  if (gap) {
+    const before = said.slice(0, gap.index).split(' ').at(-1)
+    const after = said.slice(gap.index + gap[0].length).split(' ')[0]
+    return `the description of \`${form}\` has ${gap[0].length} spaces between "${before}" and "${after}", where its words are set off by one: "${said}"`
+  }
+  return null
+}
+
 test('describedAs returns each form\'s description without the rest of the form', () => {
   const forms = formsIn(lines)
   assert.ok(forms.includes('path:CHECK-ID'), 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
   for (const form of forms) {
     const said = describedAs(form)
     assert.notEqual(said, null, `the comment at the top of .hmaignore names \`${form}\`, but describedAs finds no description of it`)
-    assert.doesNotMatch(said, /^#| {2,}/, `the description of \`${form}\` starts with the rest of the form: "${said}"`)
+    const problem = descriptionProblem(form, said)
+    assert.equal(problem, null, problem)
   }
 })
 
@@ -164,6 +181,17 @@ test('describedAs returns each form\'s description without the rest of the form'
 test('the forms are read from the comment at the top of .hmaignore only', () => {
   const noted = [...lines, '#   note  the rule above is renewed each quarter']
   assert.deepEqual(formsIn(noted), formsIn(lines))
+})
+
+test('a misread description is reported by what was found in it', () => {
+  assert.equal(descriptionProblem('path:CHECK-ID', 'that one check on that one path'), null)
+  assert.match(
+    descriptionProblem('path:CHECK-ID', '# reason   that one check on that one path'),
+    /starts with `#`, so part of the form was read as its description/,
+  )
+  const doubled = descriptionProblem('!CHECK-ID', 'still scored,  still in the verdict')
+  assert.match(doubled, /has 2 spaces between "scored," and "still"/)
+  assert.doesNotMatch(doubled, /starts with/, 'a double space inside a description is not the description starting with the form')
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
