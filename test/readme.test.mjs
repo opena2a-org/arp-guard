@@ -228,19 +228,69 @@ async function withScratch(body) {
   }
 }
 
-// A scratch directory made anywhere but `withScratch` is removed only if
-// nothing between its creation and its own cleanup throws.
-test('the tests make their scratch directories only through withScratch', () => {
-  const source = readFileSync(new URL(import.meta.url), 'utf8')
+// The name of every node:fs function that makes a temporary directory, alone or
+// with a suffix: the synchronous one, the one that takes a callback and the one
+// that returns a promise.
+const MAKES_SCRATCH = /mkdtemp\w*/g
+
+// The names an `import` declaration binds, up to the module it names.
+const IMPORT_CLAUSE = /^import\b[\w$\s{},*]*/gm
+
+// Where `source` names a function that makes a temporary directory: how often
+// in `withScratch`, and the 1-based lines elsewhere. The name counts wherever
+// it stands, so an alias, a property read and a `node -e` script count as a
+// call does. Two places are not counted: the pattern above, which holds the
+// name and uses nothing, and an `import` that binds the function under its own
+// name, since every use of that binding is counted. An `import` that renames
+// the function is counted, because the uses of the new name are not.
+function scratchSites(source) {
   const start = source.indexOf('\nasync function withScratch(')
   const end = source.indexOf('\n}\n', start)
   assert.ok(start >= 0 && end > start, 'withScratch was not found')
-  const sites = [...source.matchAll(/\bmkdtempSync\(/g)].map(({ index }) => index)
-  const outside = sites
-    .filter((index) => index < start || index > end)
-    .map((index) => source.slice(0, index).split('\n').length)
-  assert.equal(sites.length - outside.length, 1, 'withScratch does not make its scratch directory')
+  const pattern = String(MAKES_SCRATCH)
+  const clauses = [...source.matchAll(IMPORT_CLAUSE)].map((clause) => [clause.index, clause.index + clause[0].length])
+  const sites = [...source.matchAll(MAKES_SCRATCH)]
+    .filter(({ 0: name, index }) => {
+      if (source.startsWith(pattern, index - 1)) return false
+      const after = index + name.length
+      const clause = clauses.find(([from, to]) => index >= from && after <= to)
+      return !clause || /^\s+as\b/.test(source.slice(after, clause[1]))
+    })
+    .map(({ index }) => index)
+  const outside = sites.filter((index) => index < start || index > end)
+  return {
+    inside: sites.length - outside.length,
+    outside: outside.map((index) => source.slice(0, index).split('\n').length),
+  }
+}
+
+// A scratch directory made anywhere but `withScratch` is removed only if
+// nothing between its creation and its own cleanup throws.
+test('the tests make their scratch directories only through withScratch', () => {
+  const { inside, outside } = scratchSites(readFileSync(new URL(import.meta.url), 'utf8'))
+  assert.equal(inside, 1, 'withScratch does not make its scratch directory')
   assert.deepEqual(outside, [], `a scratch directory is made outside withScratch, at line ${outside.join(', line ')}`)
+})
+
+// Each line is added above `neverExits`, where no scratch directory is made.
+// The names are read from `withScratch`, so this test names no such function
+// itself and adds nothing for the check above to count.
+test('a scratch directory made under another name, or without the synchronous call, counts as made outside withScratch', () => {
+  const source = readFileSync(new URL(import.meta.url), 'utf8')
+  const [synchronous] = String(withScratch).match(MAKES_SCRATCH)
+  const asynchronous = synchronous.replace(/Sync$/, '')
+  const at = source.indexOf('\nfunction neverExits(')
+  assert.ok(at >= 0, 'neverExits was not found')
+  const line = source.slice(0, at).split('\n').length + 1
+  for (const added of [
+    `const make = ${synchronous}`,
+    `const made = ${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'), () => {})`,
+    `const made = fs.promises.${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'))`,
+    `import { ${synchronous} as make } from 'node:fs'`,
+  ]) {
+    const changed = `${source.slice(0, at)}\n${added}${source.slice(at)}`
+    assert.deepEqual(scratchSites(changed), { inside: 1, outside: [line] }, `not counted: ${added}`)
+  }
 })
 
 test('a never-exiting command that is not the last one stops with the run', () =>
