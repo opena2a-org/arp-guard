@@ -24,19 +24,33 @@ const readme = readFileSync(join(root, 'README.md'), 'utf8').split('\n')
 
 const INSTALL = 'npm install arp-guard'
 
-// Line numbers here are 1-based, as an editor shows them.
+// A code fence, as CommonMark defines it: three or more backticks or tildes,
+// indented at most three spaces.
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
+// Line numbers here are 1-based, as an editor shows them. Only a fence of the
+// opening character, at least as long and with nothing after it, closes a
+// block, so a ``` line inside a ~~~ block is part of the block. A block that is
+// never closed throws: it would otherwise hide every heading after it.
 function fencedBlocks(lines) {
   const blocks = []
   let open = null
   lines.forEach((line, i) => {
-    if (!line.startsWith('```')) return
+    const fence = FENCE.exec(line)
+    if (!fence) return
+    const [, run, rest] = fence
     if (open === null) {
-      open = { lang: line.slice(3).trim(), start: i + 1, body: [] }
-    } else {
-      blocks.push({ ...open, end: i + 1 })
+      // A backtick in the info string makes the line inline code, not a fence.
+      if (run[0] === '`' && rest.includes('`')) return
+      open = { fence: run, lang: rest.trim(), start: i + 1 }
+    } else if (run[0] === open.fence[0] && run.length >= open.fence.length && rest.trim() === '') {
+      blocks.push({ lang: open.lang, start: open.start, end: i + 1 })
       open = null
     }
   })
+  if (open !== null) {
+    throw new Error(`the ${open.fence} fence opened at line ${open.start} is never closed`)
+  }
   for (const block of blocks) block.body = lines.slice(block.start, block.end - 1)
   return blocks
 }
@@ -120,6 +134,21 @@ test('Quick Start is the first section and the caveat section follows it', () =>
 test('a `## ` line inside a code block is not a section', () => {
   const lines = ['## Quick Start', '```bash', '## comment', '```', '## Next']
   assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('a `## ` line inside a tilde code block is not a section', () => {
+  const lines = ['## Quick Start', '~~~', '## comment', '~~~', '## Next']
+  assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('a code block closes only on a fence of its own character, at least as long', () => {
+  const lines = ['## Quick Start', '~~~~markdown', '```', '~~~', '## comment', '~~~~', '## Next']
+  assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
+})
+
+test('an unclosed code block fails the check instead of hiding the sections after it', () => {
+  const lines = ['## Quick Start', '```bash', '## comment', '## Next']
+  assert.throws(() => sections(lines), /``` fence opened at line 2 is never closed/)
 })
 
 test('the documented script runs in its own process against the built package', () => {
