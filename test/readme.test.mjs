@@ -279,6 +279,50 @@ test('a run whose commands exited while a process they started holds stdout says
   })
 })
 
+// Starts a node process that runs `commands` through the module at `helper`,
+// as the test process does. Its stderr is kept: a runner that fails to start
+// says why there and nowhere else.
+function startRunner(helper, commands) {
+  const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''
+  child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk))
+  // 'close' waits for stderr to close, so `stderr` is complete once this resolves.
+  const ended = new Promise((resolve) => child.on('close', (status, received) => resolve(received ?? status)))
+  return { child, ended, stderr: () => stderr }
+}
+
+// Resolves to the process id `pidFile` records. Fails, with the runner's
+// stderr, as soon as the runner ends without one, or after `within` ms.
+async function documentedPid(runner, pidFile, within) {
+  let status = null
+  runner.ended.then((received) => (status = received))
+  const deadline = Date.now() + within
+  for (;;) {
+    const pid = await recordedPid(pidFile, 0)
+    if (pid > 0) return pid
+    if (status !== null || Date.now() >= deadline) break
+    await sleep(50)
+  }
+  const reason = status === null ? `within ${within} ms` : `before the runner exited ${status}`
+  assert.fail(`the documented command did not record its process id ${reason}; the runner's stderr:\n${runner.stderr()}`)
+}
+
+test('a runner that fails to start fails at once and shows its stderr', { timeout: 5_000 }, async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  const pidFile = join(scratch, 'pid')
+  const runner = startRunner(new URL('./no-such-module.mjs', import.meta.url).href, `node -e '${neverExits(pidFile)}'`)
+  try {
+    await assert.rejects(
+      documentedPid(runner, pidFile, 10_000),
+      /did not record its process id before the runner exited 1; the runner's stderr:\n[\s\S]*Cannot find module/,
+    )
+  } finally {
+    runner.child.kill('SIGKILL')
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
 // Whether process `pid` leads a process group. A group has the id of the
 // process that leads it, and signal 0 only asks whether that group exists.
 function leadsGroup(pid) {
@@ -304,19 +348,16 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
     const pidFile = join(scratch, 'pid')
     const helper = new URL('./run-as-documented.mjs', import.meta.url).href
-    const commands = `node -e '${neverExits(pidFile)}'\necho done`
-    const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
-    const runner = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'ignore' })
-    const ended = new Promise((resolve) => runner.on('close', (status, received) => resolve(received ?? status)))
+    const runner = startRunner(helper, `node -e '${neverExits(pidFile)}'\necho done`)
     let stillRuns = 0
     try {
-      const pid = await recordedPid(pidFile, 10_000)
-      assert.ok(pid > 0, 'the documented command did not record its process id')
+      const pid = await documentedPid(runner, pidFile, 10_000)
       // Asked while it runs, asserted last: a failure before the signal is
       // sent would leave it running.
       const ledGroup = leadsGroup(pid)
-      runner.kill(signal)
-      assert.equal(await ended, signal, `the test process did not end on ${signal}`)
+      runner.child.kill(signal)
+      // The message is built after `ended` resolves, so it holds all of stderr.
+      assert.equal(await runner.ended, signal, `the test process did not end on ${signal}; its stderr:\n${runner.stderr()}`)
       if (!(await exits(pid, 5_000))) stillRuns = pid
       assert.equal(stillRuns, 0, `process ${pid}, started by the documented commands, still runs`)
       assert.ok(!ledGroup, `process ${pid} led the process group, so its stopping does not show the group was stopped`)
@@ -326,7 +367,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
           process.kill(stillRuns, 'SIGKILL')
         } catch {}
       }
-      runner.kill('SIGKILL')
+      runner.child.kill('SIGKILL')
       rmSync(scratch, { recursive: true, force: true })
     }
   })
