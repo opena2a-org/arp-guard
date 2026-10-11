@@ -3,10 +3,15 @@ title = "ARP Secret Detection Rules"
 [extend]
 useDefault = true
 
+# gitleaks takes the first non-empty capture group of a rule's regex as the
+# secret, or the whole match when there is none, and --redact masks only that.
+# So a rule captures the value and nothing else, or captures nothing: the key
+# name, the URL scheme and the key type are in non-capturing groups.
+
 [[rules]]
 id = "api-key-generic"
 description = "Generic API key assignment"
-regex = '''(?i)(api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*["'][A-Za-z0-9_\-]{20,}["']'''
+regex = '''(?i)(?:api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*["']([A-Za-z0-9_\-]{20,})["']'''
 tags = ["api", "key"]
 
 [[rules]]
@@ -18,13 +23,13 @@ tags = ["jwt", "token"]
 [[rules]]
 id = "pem-private-key"
 description = "PEM-encoded private key"
-regex = '''-----BEGIN\s*(RSA|EC|OPENSSH|DSA|ED25519|ENCRYPTED)?\s*PRIVATE KEY-----'''
+regex = '''-----BEGIN\s*(?:RSA|EC|OPENSSH|DSA|ED25519|ENCRYPTED)?\s*PRIVATE KEY-----'''
 tags = ["crypto", "key"]
 
 [[rules]]
 id = "database-password"
 description = "Database connection with password"
-regex = '''(?i)(postgres|mysql|mongodb)://[^:]+:[^@\s]{8,}@'''
+regex = '''(?i)(?:postgres|mysql|mongodb)://[^:]+:([^@\s]{8,})@'''
 tags = ["database", "credential"]
 
 [allowlist]
