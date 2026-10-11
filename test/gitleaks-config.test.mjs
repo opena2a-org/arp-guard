@@ -19,7 +19,9 @@
 // configuration .gitleaks.toml extends. NOT_REPORTED holds lines that match a
 // rule's regex and that gitleaks does not report for that reason, one for each
 // kind of value the comment in .gitleaks.toml names. REPORTED holds the lines
-// that comment names as close to one of those kinds and still reported.
+// that comment names as close to one of those kinds and still reported. The
+// comment checks read each kind from the sentence of the comment it is named
+// under, and fail when that sentence says the opposite.
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -187,11 +189,13 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'DbPassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('/TMP/dbpassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'ecretPass') },
+  { id: 'database-password', kind: '$<U+212A>EYNAME_X', line: urlLine('$' + unicode('<U+212A>EYNAME_X')) },
   { id: 'database-password', kind: '{{<U+212A>eyname}}', line: urlLine('{{' + unicode('<U+212A>eyname') + '}}') },
   { id: 'database-password', kind: '${{secrets.pa<U+017F><U+017F>word}}', line: urlLine('$' + '{{' + unicode('secrets.pa<U+017F><U+017F>word') + '}}') },
+  { id: 'database-password', kind: '/tmp/pa<U+017F><U+017F>word', line: urlLine(unicode('/tmp/pa<U+017F><U+017F>word')) },
   // A value with a letter the {{...}} kind does not match, and that another
   // kind matches.
-  { id: 'database-password', kind: 'unless another kind above matches it, such as {{p<U+00E4>sswordfalse}}', line: urlLine('{{' + unicode('p<U+00E4>sswordfalse') + '}}') },
+  { id: 'database-password', kind: '{{p<U+00E4>sswordfalse}}, which contains `false`', line: urlLine('{{' + unicode('p<U+00E4>sswordfalse') + '}}') },
   { id: 'database-password', kind: `{{<U+00E4>${alphabet}}}, which holds the alphabet`, line: urlLine('{{' + unicode('<U+00E4>') + alphabet + '}}') },
 ]
 
@@ -199,17 +203,78 @@ const NOT_REPORTED = [
 // differ from a kind of value in NOT_REPORTED by one character, each with the
 // words in the comment of .gitleaks.toml that name it.
 const REPORTED = [
+  { id: 'database-password', kind: '$P<U+00C4>SSWORD_X', line: urlLine('$' + unicode('P<U+00C4>SSWORD_X')) },
+  { id: 'database-password', kind: '${P<U+00C4>SSWORD}', line: urlLine('$' + '{' + unicode('P<U+00C4>SSWORD') + '}') },
+  { id: 'database-password', kind: '%P<U+00C4>SSWORD%', line: urlLine('%' + unicode('P<U+00C4>SSWORD') + '%') },
   { id: 'database-password', kind: '{{p<U+00E4>ssword}}', line: urlLine('{{' + unicode('p<U+00E4>ssword') + '}}') },
   { id: 'database-password', kind: '${{secrets.P<U+00C4>SSWORD}}', line: urlLine('$' + '{{' + unicode('secrets.P<U+00C4>SSWORD') + '}}') },
+  { id: 'database-password', kind: '/tmp/p<U+00E4>ssword', line: urlLine(unicode('/tmp/p<U+00E4>ssword')) },
+  { id: 'database-password', kind: '/Users/<U+00E4>pp/dbpassword', line: urlLine(unicode('/Users/<U+00E4>pp/dbpassword')) },
+  { id: 'database-password', kind: '{{pass<U+0663>word}}', line: urlLine('{{' + unicode('pass<U+0663>word') + '}}') },
+  { id: 'database-password', kind: '${{secrets.DB_PASSWORD<U+0663>}}', line: urlLine('$' + '{{' + unicode('secrets.DB_PASSWORD<U+0663>') + '}}') },
 ]
 
 // The comment of .gitleaks.toml as one line of text.
 const configComment = config.split('\n').filter((text) => text.startsWith('#')).map((text) => text.replace(/^#\s?(?:-\s)?/, '')).join(' ').replace(/\s+/g, ' ')
 
-test('the comment in .gitleaks.toml names each kind of value in NOT_REPORTED', () => {
-  for (const { id, kind } of NOT_REPORTED) {
-    assert.ok(configComment.includes(kind), `the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a kind of value ${id} does not report`)
+// Words from each sentence in the comment of .gitleaks.toml that says a rule
+// reports, or does not report, a kind of value. A kind is named under the last
+// of these before it: in that sentence, or in the bullets and sentences after
+// it up to the next sentence that says what a rule reports.
+const CLAIMS = [
+  'api-key-generic and database-password do not report a value that allowlist matches',
+  'is not of these kinds, so database-password reports values such as',
+  'It still does not report such a value when another kind above matches it',
+  'which the (?i) matches as k and s, so database-password does not report',
+]
+
+// Every kind of value the comment checks read. A kind named inside a longer
+// one, such as /tmp/ in /tmp/p<U+00E4>ssword, is read as the longer one there.
+const KINDS = [...NOT_REPORTED, ...REPORTED].map(({ kind }) => kind)
+
+// The words in the comment that say a rule reports, or does not report, a value.
+const VERB = /\b(?:reports|do(?:es)? not report)\b/g
+
+// Each index in text where part starts.
+function indexesOf(text, part) {
+  const indexes = []
+  for (let index = text.indexOf(part); index !== -1; index = text.indexOf(part, index + 1)) indexes.push(index)
+  return indexes
+}
+
+// Each index in text where kind starts, outside a longer kind in KINDS.
+function placesOf(text, kind) {
+  const longer = KINDS.filter((other) => other.length > kind.length && other.includes(kind))
+  return indexesOf(text, kind).filter((place) => !longer.some((other) => indexesOf(text, other).some((start) => start <= place && place + kind.length <= start + other.length)))
+}
+
+// What is wrong with how the comment names the kinds of the entries, which
+// gitleaks reports when reported is true and does not report otherwise: a kind
+// the comment does not name, or names under a sentence that is not in CLAIMS or
+// that says the opposite.
+function misnamed(comment, entries, reported) {
+  const verbs = [...comment.matchAll(VERB)]
+  const says = reported ? 'reports' : 'does not report'
+  const problems = []
+  for (const { id, kind } of entries) {
+    const places = placesOf(comment, kind)
+    if (places.length === 0) problems.push(`the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a value ${id} ${says}`)
+    for (const place of places) {
+      const verb = verbs.findLast((match) => match.index < place)
+      const claim = verb && CLAIMS.find((words) => indexesOf(comment, words).some((start) => start <= verb.index && verb.index < start + words.length))
+      if (!claim) {
+        const under = verb ? JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length)) : 'no sentence that says what a rule reports'
+        problems.push(`the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value ${id} ${says}, under ${under}, which is not a sentence in CLAIMS`)
+      } else if ((verb[0] === 'reports') !== reported) {
+        problems.push(`the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value ${id} ${says}, under ${JSON.stringify(claim)}`)
+      }
+    }
   }
+  return problems
+}
+
+test('the comment in .gitleaks.toml names each kind of value in NOT_REPORTED under a sentence that says it is not reported', () => {
+  assert.deepEqual(misnamed(configComment, NOT_REPORTED, false), [])
 })
 
 test('gitleaks does not report a line whose value its global allowlist matches', { skip }, () => {
@@ -221,9 +286,23 @@ test('gitleaks does not report a line whose value its global allowlist matches',
   }
 })
 
-test('the comment in .gitleaks.toml names each value in REPORTED', () => {
-  for (const { id, kind } of REPORTED) {
-    assert.ok(configComment.includes(kind), `the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a value ${id} reports`)
+test('the comment in .gitleaks.toml names each value in REPORTED under a sentence that says it is reported', () => {
+  assert.deepEqual(misnamed(configComment, REPORTED, true), [])
+})
+
+// The text with each a in it replaced by b, and each b by a.
+function swap(text, a, b) {
+  return text.split(a).map((part) => part.replaceAll(b, a)).join(b)
+}
+
+test('the comment checks fail when the comment names a value in REPORTED where it says a value is not reported, or the reverse', () => {
+  const examples = (text) => swap(swap(text, '{{p<U+00E4>ssword}}', '{{<U+212A>eyname}}'), '${{secrets.P<U+00C4>SSWORD}}', '${{secrets.pa<U+017F><U+017F>word}}')
+  const verbs = (text) => swap(text, 'reports', 'does not report')
+  for (const edit of [examples, verbs, (text) => verbs(examples(text))]) {
+    const comment = edit(configComment)
+    assert.notEqual(comment, configComment)
+    assert.notDeepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
+    assert.notDeepEqual(misnamed(comment, REPORTED, true), [], comment)
   }
 })
 
