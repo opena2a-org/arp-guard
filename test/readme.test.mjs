@@ -20,7 +20,7 @@ import { root, runAsDocumented } from './run-as-documented.mjs'
 
 const readme = readFileSync(join(root, 'README.md'), 'utf8').split('\n')
 
-const INSTALL = 'npm install arp-guard'
+const INSTALL = 'npm install agent-runtime-protection'
 
 // A code fence, as CommonMark defines it: three or more backticks or tildes,
 // indented at most three spaces. With the `s` flag `.*` also takes a carriage
@@ -144,7 +144,7 @@ test('a long fence run that ends in a carriage return is read in linear time', (
 
 test('the documented script runs in its own process against the built package', async () => {
   const [pid, resolved] = await runAsDocumented(
-    `node -e "console.log(process.pid); console.log(require.resolve('arp-guard'))"`,
+    `node -e "console.log(process.pid); console.log(require.resolve('agent-runtime-protection'))"`,
   )
   assert.ok(Number(pid) > 0, 'the script did not print a process id')
   assert.notEqual(Number(pid), process.pid, 'the script ran inside the test process')
@@ -152,7 +152,7 @@ test('the documented script runs in its own process against the built package', 
 })
 
 test('the documented commands get PATH and no other variable from the runner', async () => {
-  const name = 'ARP_GUARD_README_TEST_PROBE'
+  const name = 'AGENT_RUNTIME_PROTECTION_README_TEST_PROBE'
   process.env[name] = 'visible'
   try {
     const [probe, path] = await runAsDocumented(
@@ -220,7 +220,7 @@ function neverExits(pidFile) {
 // `body` has ended, also when it throws. A `startRunner` call that throws does
 // so before the `try` that stops the runner, so that `try` cannot remove it.
 async function withScratch(body) {
-  const scratch = mkdtempSync(join(tmpdir(), 'arp-guard-readme-pid-'))
+  const scratch = mkdtempSync(join(tmpdir(), 'agent-runtime-protection-readme-pid-'))
   try {
     return await body(scratch)
   } finally {
@@ -322,8 +322,8 @@ test('a scratch directory made under another name, or without the synchronous ca
   const asynchronous = synchronous.replace(/Sync$/, '')
   for (const added of [
     `const make = ${synchronous}`,
-    `const made = ${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'), () => {})`,
-    `const made = fs.promises.${asynchronous}(join(tmpdir(), 'arp-guard-readme-pid-'))`,
+    `const made = ${asynchronous}(join(tmpdir(), 'agent-runtime-protection-readme-pid-'), () => {})`,
+    `const made = fs.promises.${asynchronous}(join(tmpdir(), 'agent-runtime-protection-readme-pid-'))`,
     `import { ${synchronous} as make } from 'node:fs'`,
     `import { ${synchronous} /* renamed */ as make } from 'node:fs'`,
     `import { ${synchronous} // renamed\n as make } from 'node:fs'`,
@@ -514,7 +514,7 @@ function startRunner(helper, commands, tmp) {
 
 // The scratch directories runAsDocumented has made in `tmp` and not removed.
 function scratchDirs(tmp) {
-  return readdirSync(tmp).filter((name) => name.startsWith('arp-guard-readme-'))
+  return readdirSync(tmp).filter((name) => name.startsWith('agent-runtime-protection-readme-'))
 }
 
 // Stops `runner` unless it has ended. SIGTERM first: the runner's handler stops

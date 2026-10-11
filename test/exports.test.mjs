@@ -1,10 +1,10 @@
 // Guards the one contract this package has: it re-exports the ARP engine whole.
 //
-// The failure this exists to catch is silent. `arp-guard` used to re-export a
+// The failure this exists to catch is silent. The package used to re-export a
 // hand-maintained list of names, which drifted to 41 of the engine's 86 symbols;
-// the 45 it omitted included both consent functions, so
-// `require('arp-guard').writeOptOutMarker` was `undefined` while the engine
-// exported it as a function. Nothing failed — the symbol was simply absent.
+// the 45 it omitted included both consent functions, so `writeOptOutMarker` was
+// `undefined` on the package's exports while the engine exported it as a
+// function. Nothing failed — the symbol was simply absent.
 //
 // Run against the BUILT output, because that is what ships.
 
