@@ -159,6 +159,23 @@ test('the Benchmark section gives how many OASB scenarios map to MITRE ATLAS', (
   assert.equal(mapped + unmapped, total)
 })
 
+test('the Benchmark section states any passing count its caveats refer to', () => {
+  const benchmark = sectionText(readme, '## Benchmark')
+  if (!/passing count/i.test(benchmark)) return
+  assert.match(benchmark, /\b\d+ of \d+\b/, 'the section refers to a passing count it does not state')
+})
+
+test('the Benchmark network caveat names the polling network monitor, not network detection as a whole', () => {
+  const benchmark = sectionText(readme, '## Benchmark')
+  assert.match(benchmark, /polling network monitor/, 'the caveat does not name the polling network monitor')
+  assert.match(benchmark, /network interceptor is exercised/, 'the caveat does not say the interceptor path is tested')
+})
+
+test('a section ends at the next heading outside a code block', () => {
+  const lines = ['## Benchmark', 'one', '```bash', '## comment', '```', 'two', '## License', 'three']
+  assert.equal(sectionText(lines, '## Benchmark'), 'one ```bash ## comment ``` two')
+})
+
 test('a `## ` line inside a code block is not a section', () => {
   const lines = ['## Quick Start', '```bash', '## comment', '```', '## Next']
   assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
