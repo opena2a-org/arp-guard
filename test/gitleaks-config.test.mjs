@@ -9,8 +9,13 @@
 // The check reads the rules the way this file writes them: a `[[rules]]` table
 // with an `id` and a `regex` in a ''' literal string, with an optional leading
 // `(?i)`. It does not read `secretGroup`; a rule that sets it fails here until
-// parseRules learns it. When gitleaks is on the PATH, the last test also runs
-// it on the same lines.
+// parseRules learns it. When gitleaks is on the PATH, the last two tests also
+// run it: one on the same lines, one on the lines in NOT_REPORTED.
+//
+// The value a rule captures is also the text gitleaks tests its global
+// allowlist against, and that allowlist includes the one in the default
+// configuration .gitleaks.toml extends. NOT_REPORTED holds lines that match a
+// rule's regex and that gitleaks does not report for that reason.
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -95,5 +100,29 @@ test('gitleaks reports each sample line under its rule and prints no value', { s
   for (const [id, sample] of Object.entries(SAMPLES)) {
     assert.match(output, new RegExp(`^RuleID:\\s+${id}$`, 'm'), `gitleaks did not report ${id}`)
     assert.ok(!output.includes(sample.hidden), `the output of gitleaks holds the value from the ${id} sample`)
+  }
+})
+
+const keyLine = (text) => `${['api', 'key'].join('_')} = "${text}"`
+const urlLine = (text) => `url = "${'postgres' + ':' + '//'}appuser${':' + text + '@'}db.internal:5432/app"`
+const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index)).join('')
+
+// Lines the secret scan does not report, measured with gitleaks 8.30.1. While
+// these rules captured the key name or the URL scheme, the allowlist was tested
+// against that text, and gitleaks reported each of these lines.
+const NOT_REPORTED = [
+  { id: 'api-key-generic', value: 'one repeated letter', line: keyLine('x'.repeat(32)) },
+  { id: 'api-key-generic', value: 'the alphabet in order', line: keyLine(`${alphabet}012345`) },
+  { id: 'database-password', value: 'one repeated letter', line: urlLine('x'.repeat(10)) },
+  { id: 'database-password', value: 'a reference of the form ${NAME}', line: urlLine('$' + '{DB_PASSWORD}') },
+  { id: 'database-password', value: 'a reference of the form $NAME', line: urlLine('$' + 'DB_PASSWORD') },
+]
+
+test('gitleaks does not report a line whose value its global allowlist matches', { skip: gitleaks.error ? 'gitleaks is not on the PATH' : false }, () => {
+  for (const { id, value, line } of NOT_REPORTED) {
+    const rule = rules.find((candidate) => candidate.id === id)
+    assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line with ${value}`)
+    const run = spawnSync('gitleaks', ['stdin', '--config', configPath, '--redact', '--verbose', '--no-color', '--no-banner'], { input: `${line}\n`, encoding: 'utf8' })
+    assert.equal(run.status, 0, `gitleaks ${gitleaks.stdout.trim()} reports the ${id} line whose value is ${value}:\n${run.stdout}\n${run.stderr}`)
   }
 })
