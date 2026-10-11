@@ -149,11 +149,18 @@ function describedAs(form, from = lines) {
 
 // What is wrong with the description describedAs returned for a form, or null.
 // A form is set off from its description by two or more spaces, and the
-// description's own words by one. A description that starts with `#` holds part
-// of the form, such as the `# reason` of `path:CHECK-ID # reason`. Two or more
-// spaces inside it are either part of the form read the same way or a double
-// space in the header's own words, so the message names the words on each side.
+// description's own words by one. describedAs reads a description from after
+// all the spaces of that gap, so one that is empty or starts with a space comes
+// from a form line with no description after such a gap: the form text left in
+// place, or nothing before the lines under it. A description that starts with
+// `#` holds part of the form, such as the `# reason` of `path:CHECK-ID # reason`.
+// Two or more spaces inside it are either part of the form read the same way or
+// a double space in the header's own words, so the message names the words on
+// each side.
 function descriptionProblem(form, said) {
+  if (said === '' || said.startsWith(' ')) {
+    return `the line of \`${form}\` carries no description after the form; write it on that line, set off from the form by two or more spaces: "${said}"`
+  }
   if (said.startsWith('#')) {
     return `the description of \`${form}\` starts with \`#\`, so part of the form was read as its description: "${said}"`
   }
@@ -204,6 +211,22 @@ test('a misread description is reported by what was found in it', () => {
   const doubled = descriptionProblem('!CHECK-ID', 'still scored,  still in the verdict')
   assert.match(doubled, /has 2 spaces between "scored," and "still"/)
   assert.doesNotMatch(doubled, /starts with/, 'a double space inside a description is not the description starting with the form')
+})
+
+// A form line that carries nothing after the form leaves the form text in what
+// describedAs returns; the message says the line has no description, not that
+// there is a gap after an empty word.
+test('a form line with no description after the form is reported as having none', () => {
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
+  for (const formLine of ['#   !CHECK-ID', '#   !CHECK-ID   ']) {
+    const bare = lines.map((text, index) => (index === start ? formLine : text))
+    const problem = descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', bare))
+    assert.match(problem, /the line of `!CHECK-ID` carries no description after the form/, `${JSON.stringify(formLine)}: ${problem}`)
+    assert.doesNotMatch(problem, /between ""/, `${JSON.stringify(formLine)}: ${problem}`)
+  }
+  assert.match(descriptionProblem('!CHECK-ID', '   !CHECK-ID still scored'), /carries no description after the form/)
+  assert.match(descriptionProblem('!CHECK-ID', ''), /carries no description after the form/)
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
