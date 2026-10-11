@@ -132,11 +132,36 @@ function formsIn(lines) {
   return headerOf(lines).map((line) => line.match(FORM)?.[1]).filter(Boolean)
 }
 
-// A form line up to the end of the gap before its description: the form, then
-// the `# reason` a form may carry, as `path:CHECK-ID # reason` does, then two or
-// more spaces. The gap must come right after them, so a description set off by
-// one space or a tab is not read from after a double space inside it.
-const FORM_AND_GAP = /^ {3}\S+(?: # \S.*?)? {2,}/
+// A form line split at the gap before its description: the `# reason` the form
+// carries, as `path:CHECK-ID # reason` does, without its `# `, or null, then the
+// text after the gap. The gap is two or more spaces right after the form or
+// after its `# reason`, so a description set off by one space or a tab is not
+// read from after a double space inside it. A `# reason` ends at the widest run
+// of two or more spaces with text after it, the first of them if several are as
+// wide: the comment sets its descriptions in a column, so a double space inside
+// a reason or a description is narrower than the gap before the description.
+// With no such gap, the text after the gap is the whole line, form and all.
+function splitFormLine(line) {
+  const reasonAt = /^ {3}\S+ # (?=\S)/.exec(line)
+  if (reasonAt) {
+    const rest = line.slice(reasonAt[0].length)
+    let gap = null
+    for (const run of rest.matchAll(/ {2,}/g)) {
+      const atEnd = run.index + run[0].length === rest.length
+      if (gap === null || (!atEnd && run[0].length > gap[0].length)) gap = run
+    }
+    if (gap) return { reason: rest.slice(0, gap.index), description: rest.slice(gap.index + gap[0].length) }
+  }
+  const gap = /^ {3}\S+ {2,}/.exec(line)
+  return { reason: null, description: gap ? line.slice(gap[0].length) : line }
+}
+
+// The `# reason` the line of a form carries in the comment at the top of
+// .hmaignore, without its `# `, or null.
+function reasonOf(form, from = lines) {
+  const line = headerOf(from).find((line) => line.match(FORM)?.[1] === form)
+  return line === undefined ? null : splitFormLine(line).reason
+}
 
 // What the comment at the top of .hmaignore says one rule form does: the text
 // after the form on its own line, then the indented lines under it, each
@@ -145,7 +170,7 @@ function describedAs(form, from = lines) {
   const comment = headerOf(from)
   const start = comment.findIndex((line) => line.match(FORM)?.[1] === form)
   if (start === -1) return null
-  const said = [comment[start].replace(FORM_AND_GAP, '').trimEnd()]
+  const said = [splitFormLine(comment[start]).description.trimEnd()]
   for (const line of comment.slice(start + 1)) {
     if (!/^ {4,}\S/.test(line)) break
     said.push(line.trim())
@@ -171,13 +196,27 @@ function descriptionProblem(form, said) {
   if (said.startsWith('#')) {
     return `the description of \`${form}\` starts with \`#\`, so part of the form was read as its description: "${said}"`
   }
-  const gap = / {2,}/.exec(said)
-  if (gap) {
-    const before = said.slice(0, gap.index).split(' ').at(-1)
-    const after = said.slice(gap.index + gap[0].length).split(' ')[0]
-    return `the description of \`${form}\` has ${gap[0].length} spaces between "${before}" and "${after}", where its words are set off by one: "${said}"`
-  }
+  const doubled = doubleSpaceIn(said)
+  if (doubled) return `the description of \`${form}\` has ${doubled}, where its words are set off by one: "${said}"`
   return null
+}
+
+// What is wrong with the `# reason` reasonOf returned for a form, or null: its
+// words are set off by one space, as a description's are.
+function reasonProblem(form, reason) {
+  const doubled = reason === null ? null : doubleSpaceIn(reason)
+  if (doubled) return `the \`# reason\` of \`${form}\` has ${doubled}, where its words are set off by one: "${reason}"`
+  return null
+}
+
+// The first run of two or more spaces in a text, named by its width and the
+// words on each side of it, or null.
+function doubleSpaceIn(text) {
+  const gap = / {2,}/.exec(text)
+  if (!gap) return null
+  const before = text.slice(0, gap.index).split(' ').at(-1)
+  const after = text.slice(gap.index + gap[0].length).split(' ')[0]
+  return `${gap[0].length} spaces between "${before}" and "${after}"`
 }
 
 test('describedAs returns each form\'s description without the rest of the form', () => {
@@ -189,6 +228,8 @@ test('describedAs returns each form\'s description without the rest of the form'
     const said = describedAs(form)
     const problem = descriptionProblem(form, said)
     assert.equal(problem, null, problem)
+    const inReason = reasonProblem(form, reasonOf(form))
+    assert.equal(inReason, null, inReason)
   }
 })
 
@@ -277,6 +318,33 @@ test('a description set off from the form by one space or a tab is reported as n
     assert.ok(problem.startsWith(`the line of \`${form}\` `), `${JSON.stringify(formLine)}: ${problem}`)
     assert.doesNotMatch(problem, /no description after the form/, `${JSON.stringify(formLine)}: ${problem}`)
   }
+})
+
+// A form's `# reason` may hold a double space of its own. The description is
+// still read from after the gap that sets it off, and the double space is
+// reported in the reason, by the words on each side of it, not as a gap between
+// the reason's last word and the description's first.
+test('a double space inside a form\'s `# reason` is reported in the reason, not as the gap before the description', () => {
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === 'path:CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
+  const withLine = (formLine) => lines.map((text, index) => (index === start ? formLine : text))
+  const plain = withLine('#   path:CHECK-ID # my reason   that one check')
+  const doubled = withLine('#   path:CHECK-ID # my  reason   that one check')
+  const said = describedAs('path:CHECK-ID', doubled)
+  assert.equal(said, describedAs('path:CHECK-ID', plain), 'the double space inside the `# reason` changed the description')
+  assert.equal(descriptionProblem('path:CHECK-ID', said), null)
+  assert.equal(reasonOf('path:CHECK-ID', plain), 'my reason')
+  assert.equal(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', plain)), null)
+  const problem = reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', doubled))
+  assert.match(problem ?? '', /the `# reason` of `path:CHECK-ID` has 2 spaces between "my" and "reason"/, problem)
+  // A double space inside the description is narrower than the gap before it,
+  // so it stays in the description and is reported there.
+  const inDescription = withLine('#   path:CHECK-ID # my reason   that one  check')
+  assert.equal(reasonOf('path:CHECK-ID', inDescription), 'my reason')
+  assert.match(
+    descriptionProblem('path:CHECK-ID', describedAs('path:CHECK-ID', inDescription)) ?? '',
+    /the description of `path:CHECK-ID` has 2 spaces between "one" and "check"/,
+  )
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
