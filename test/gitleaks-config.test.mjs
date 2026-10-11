@@ -9,8 +9,9 @@
 // The check reads the rules the way this file writes them: a `[[rules]]` table
 // with an `id` and a `regex` in a ''' literal string, with an optional leading
 // `(?i)`. It does not read `secretGroup`; a rule that sets it fails here until
-// parseRules learns it. When gitleaks is on the PATH, the last two tests also
-// run it: one on the same lines, one on the lines in NOT_REPORTED.
+// parseRules learns it. Two tests also run gitleaks, one on the same lines and
+// one on the lines in NOT_REPORTED. They run only when the gitleaks on the
+// PATH is GITLEAKS_VERSION, and skip with a message otherwise.
 //
 // The value a rule captures is also the text gitleaks tests its global
 // allowlist against, and that allowlist includes the one in the default
@@ -91,9 +92,39 @@ for (const rule of rules) {
   })
 }
 
-const gitleaks = spawnSync('gitleaks', ['version'], { encoding: 'utf8' })
+// The gitleaks version NOT_REPORTED is measured with, the one the secret scan
+// in .github/workflows/security.yml installs. Another version can test the
+// default allowlist another way, so the tests that run gitleaks skip on it.
+const GITLEAKS_VERSION = '8.30.1'
 
-test('gitleaks reports each sample line under its rule and prints no value', { skip: gitleaks.error ? 'gitleaks is not on the PATH' : false }, () => {
+// Why the tests that run gitleaks skip, given the result of `gitleaks version`,
+// or false when they run.
+function gitleaksSkip(result) {
+  if (result.error) return 'gitleaks is not on the PATH'
+  const version = (result.stdout ?? '').trim().replace(/^v/, '')
+  if (version === GITLEAKS_VERSION) return false
+  return `the gitleaks on the PATH is ${JSON.stringify(version)}, and the lines here are measured with gitleaks ${GITLEAKS_VERSION}`
+}
+
+test(`the tests that run gitleaks skip, with a message, unless the gitleaks on the PATH is ${GITLEAKS_VERSION}`, () => {
+  assert.equal(gitleaksSkip({ stdout: `${GITLEAKS_VERSION}\n` }), false)
+  assert.equal(gitleaksSkip({ stdout: `v${GITLEAKS_VERSION}\n` }), false)
+  assert.match(gitleaksSkip({ stdout: '8.18.0\n' }), /"8\.18\.0".*8\.30\.1/)
+  assert.match(gitleaksSkip({ stdout: '8.30.10\n' }), /"8\.30\.10"/)
+  assert.match(gitleaksSkip({ stdout: '', status: 1 }), /""/)
+  assert.equal(gitleaksSkip({ error: new Error('spawnSync gitleaks ENOENT') }), 'gitleaks is not on the PATH')
+})
+
+test('GITLEAKS_VERSION is the version the secret scan installs', () => {
+  const workflow = readFileSync(path.join(root, '.github', 'workflows', 'security.yml'), 'utf8')
+  const pinned = /^\s*GITLEAKS_VERSION:\s*"([^"]+)"\s*$/m.exec(workflow)?.[1]
+  assert.equal(pinned, GITLEAKS_VERSION, 'the secret scan installs another gitleaks version: measure NOT_REPORTED with it, then set GITLEAKS_VERSION')
+})
+
+const gitleaks = spawnSync('gitleaks', ['version'], { encoding: 'utf8' })
+const skip = gitleaksSkip(gitleaks)
+
+test('gitleaks reports each sample line under its rule and prints no value', { skip }, () => {
   const input = Object.values(SAMPLES).map((sample) => sample.line).join('\n') + '\n'
   const run = spawnSync('gitleaks', ['stdin', '--config', configPath, '--redact', '--verbose', '--no-color', '--no-banner'], { input, encoding: 'utf8' })
   const output = `${run.stdout}\n${run.stderr}`
@@ -110,7 +141,7 @@ const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97
 // The stopword of the default allowlist that is not the alphabet.
 const stopword = ['014df517', '39d1', '4453', 'b7b3', '9930c563627c'].join('-')
 
-// Lines the secret scan does not report, measured with gitleaks 8.30.1, each
+// Lines the secret scan does not report, measured with GITLEAKS_VERSION, each
 // with the words in the comment of .gitleaks.toml that name its kind of value.
 // While these rules captured the key name or the URL scheme, the allowlist was
 // tested against that text, and gitleaks reported each of these lines.
@@ -129,6 +160,7 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: 'starts with `true`', line: urlLine('trueblue2024') },
   { id: 'database-password', kind: 'contains `false`', line: urlLine('not-a-false-pass') },
   { id: 'database-password', kind: 'ends with `null`', line: urlLine('not-a-pass-null') },
+  { id: 'database-password', kind: 'in any case', line: urlLine('TRUEblue2024') },
   { id: 'database-password', kind: 'a run of `*`', line: urlLine('*'.repeat(10)) },
   { id: 'database-password', kind: 'a run of `.`', line: urlLine('.'.repeat(10)) },
   { id: 'database-password', kind: '$NAME', line: urlLine('$' + 'DB_PASSWORD') },
@@ -138,8 +170,13 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: '%NAME%', line: urlLine('%' + 'DB_PASSWORD' + '%') },
   { id: 'database-password', kind: '{{name}}', line: urlLine('{{' + 'password' + '}}') },
   { id: 'database-password', kind: '{{.Values.name}}', line: urlLine('{{' + '.Values.password' + '}}') },
+  { id: 'database-password', kind: '{{.Values.db|quote}}', line: urlLine('{{' + '.Values.db|quote' + '}}') },
+  { id: 'database-password', kind: '{{(password)}}', line: urlLine('{{' + '(password)' + '}}') },
+  { id: 'database-password', kind: '{{........}}', line: urlLine('{{' + '.'.repeat(8) + '}}') },
   { id: 'database-password', kind: '${{secrets.NAME}}', line: urlLine('$' + '{{' + 'secrets.DB_PASSWORD' + '}}') },
   ...['env', 'vars', 'github'].map((context) => ({ id: 'database-password', kind: '${{' + context + '.NAME}}', line: urlLine('$' + '{{' + context + '.DB_PASSWORD' + '}}') })),
+  { id: 'database-password', kind: '${{secrets.DB.PASSWORD}}', line: urlLine('$' + '{{' + 'secrets.DB.PASSWORD' + '}}') },
+  { id: 'database-password', kind: "${{env.DB_PASSWORD||'x'}}", line: urlLine('$' + '{{' + "env.DB_PASSWORD||'x'" + '}}') },
   ...['bin', 'etc', 'home', 'opt', 'tmp', 'usr', 'var'].map((dir) => ({ id: 'database-password', kind: `/${dir}/`, line: urlLine(`/${dir}/dbpassword`) })),
   { id: 'database-password', kind: '/Users/<name>/', line: urlLine('/Users/app/dbpassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'DbPassword') },
@@ -156,7 +193,7 @@ test('the comment in .gitleaks.toml names each kind of value in NOT_REPORTED', (
   }
 })
 
-test('gitleaks does not report a line whose value its global allowlist matches', { skip: gitleaks.error ? 'gitleaks is not on the PATH' : false }, () => {
+test('gitleaks does not report a line whose value its global allowlist matches', { skip }, () => {
   for (const { id, kind, line } of NOT_REPORTED) {
     const rule = rules.find((candidate) => candidate.id === id)
     assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line for ${JSON.stringify(kind)}`)

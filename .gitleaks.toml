@@ -21,8 +21,16 @@ useDefault = true
 # For database-password, it is also:
 # - a run of `*`, or a run of `.`
 # - a reference: $NAME, ${NAME}, a $ followed by digits or by digits in
-#   braces, %NAME%, {{name}}, {{.Values.name}}, ${{secrets.NAME}},
-#   ${{env.NAME}}, ${{vars.NAME}} or ${{github.NAME}}
+#   braces, or %NAME%
+# - {{ and }} around only letters, digits, `_`, spaces, `.`, `|`, `(` and
+#   `)`, such as {{name}}, {{.Values.name}}, {{.Values.db|quote}},
+#   {{(password)}} or {{........}}
+# - ${{ and }} around secrets, env, vars or github, then one or more
+#   segments of a `.` and a name of two or more letters, digits or `_` that
+#   starts with a letter, then only letters, digits, `_`, spaces, quotes,
+#   `&`, `.`, `/`, `=` and `|`, such as ${{secrets.NAME}}, ${{env.NAME}},
+#   ${{vars.NAME}}, ${{github.NAME}}, ${{secrets.DB.PASSWORD}} or
+#   ${{env.DB_PASSWORD||'x'}}
 # - a path that starts with /bin/, /etc/, /home/, /opt/, /tmp/, /usr/, /var/
 #   or /Users/<name>/
 # The letters in each of these kinds match in any case, such as $DbPassword,
