@@ -55,14 +55,36 @@ function fencedBlocks(lines) {
   return blocks
 }
 
+// The 1-based numbers of the lines `blocks` take up, fences included.
+function fencedLines(blocks) {
+  const fenced = new Set()
+  for (const block of blocks) {
+    for (let n = block.start; n <= block.end; n++) fenced.add(n)
+  }
+  return fenced
+}
+
 // The `## ` headings outside fenced code blocks. A `## ` line inside a code
 // sample is a comment or an example, not a section.
 function sections(lines) {
-  const fenced = new Set()
-  for (const block of fencedBlocks(lines)) {
-    for (let n = block.start; n <= block.end; n++) fenced.add(n)
-  }
+  const fenced = fencedLines(fencedBlocks(lines))
   return lines.filter((line, i) => line.startsWith('## ') && !fenced.has(i + 1))
+}
+
+// The `## ${title}` section, up to the next `## ` heading outside a code block:
+// its fenced blocks, and its lines outside them.
+function section(lines, title) {
+  const blocks = fencedBlocks(lines)
+  const fenced = fencedLines(blocks)
+  const heading = (line, i) => line.startsWith('## ') && !fenced.has(i + 1)
+  const start = lines.findIndex((line, i) => line === `## ${title}` && heading(line, i))
+  assert.notEqual(start, -1, `the README has no \`## ${title}\` section`)
+  const next = lines.findIndex((line, i) => i > start && heading(line, i))
+  const end = next === -1 ? lines.length : next
+  return {
+    blocks: blocks.filter((block) => block.start > start && block.end <= end),
+    prose: lines.slice(start + 1, end).filter((line, i) => !fenced.has(start + 2 + i)),
+  }
 }
 
 function quickStart(lines) {
@@ -717,5 +739,58 @@ test('the documented output is what the documented commands print', async () => 
   const printed = await runAsDocumented(documentedCommands(command))
 
   assert.ok(printed.join('').length > 0, 'the documented commands printed nothing')
+  assert.deepEqual(printed, output.body)
+})
+
+// The AI-layer interceptors, by the type `getStatus()` gives them, and how the
+// README names what each one scans.
+const AI_LAYER = { prompt: /\bprompts?\b/i, 'mcp-protocol': /\bMCP\b/, 'a2a-protocol': /\bA2A\b/ }
+
+// `start()` does not feed the AI-layer interceptors any traffic: they scan only
+// what the agent passes to them. So the monitors the README says run in the
+// background are measured, with the config its example passes, against the
+// ones the built package reports as running.
+test('the Runtime monitoring section names as running in the background only the monitors start() runs', async () => {
+  const { blocks, prose } = section(readme, 'Runtime monitoring')
+  const example = blocks.find((block) => block.lang === 'typescript')
+  assert.ok(example, 'the Runtime monitoring section has no typescript example')
+  const config = example.body.map((line) => /new AgentRuntimeProtection\((\{.*\})\)/.exec(line)?.[1]).find(Boolean)
+  assert.ok(config, 'the example constructs no AgentRuntimeProtection')
+
+  // L2 stays off, so the run sends nothing off the machine; the monitors that
+  // run do not depend on it.
+  const [measured] = await runAsDocumented(`node -e "
+const { AgentRuntimeProtection } = require('agent-runtime-protection');
+(async () => {
+  const arp = new AgentRuntimeProtection({ ...${config}, intelligence: { enabled: false } });
+  await arp.start();
+  console.log(arp.getStatus().monitors.filter((m) => m.running).map((m) => m.type).join(','));
+  await arp.stop();
+})();
+"`)
+  const running = measured.split(',')
+
+  const said = prose.map((line) => /^`start\(\)` runs the (.+?) monitors\./.exec(line)?.[1]).find(Boolean)
+  assert.ok(said, 'the section does not say which monitors `start()` runs')
+  assert.deepEqual(said.split(/, | and /), running)
+
+  for (const comment of example.body.filter((line) => line.trimStart().startsWith('//'))) {
+    for (const [type, name] of Object.entries(AI_LAYER)) {
+      if (running.includes(type)) continue
+      assert.doesNotMatch(comment, name, `the example says ${type} traffic is monitored, and start() runs ${measured}`)
+    }
+  }
+})
+
+test('the documented interceptor call prints what the Runtime monitoring section shows', async () => {
+  const { blocks } = section(readme, 'Runtime monitoring')
+  const index = blocks.findIndex((block) => block.lang === 'bash')
+  assert.notEqual(index, -1, 'the Runtime monitoring section runs no interceptor call')
+  const output = blocks[index + 1]
+  assert.equal(output?.lang, 'text', 'the interceptor call has no output block after it')
+
+  const printed = await runAsDocumented(blocks[index].body.join('\n'))
+
+  assert.ok(printed.join('').length > 0, 'the interceptor call printed nothing')
   assert.deepEqual(printed, output.body)
 })

@@ -1,7 +1,7 @@
 {
   "name": "agent-runtime-protection",
   "version": "0.4.0",
-  "description": "Agent Runtime Protection \u2014 EDR for AI agents: runtime monitoring, detection and enforcement across agent processes, network, filesystem, and AI-layer traffic.",
+  "description": "Agent Runtime Protection \u2014 EDR for AI agents: runtime monitoring, detection and enforcement across agent processes, network and filesystem, and scanning of the AI-layer traffic the agent passes to it.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
