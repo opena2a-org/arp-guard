@@ -21,7 +21,7 @@ useDefault = true
 # For database-password, it is also:
 # - a run of `*`, or a run of `.`
 # - a reference: $NAME, ${NAME}, a $ followed by digits or by digits in
-#   braces, or %NAME%
+#   braces, or %NAME%, where NAME holds only letters and `_`
 # - {{ and }} around only letters, digits, `_`, spaces, `.`, `|`, `(` and
 #   `)`, such as {{name}}, {{.Values.name}}, {{.Values.db|quote}},
 #   {{(password)}} or {{........}}
@@ -31,12 +31,21 @@ useDefault = true
 #   `&`, `.`, `/`, `=` and `|`, such as ${{secrets.NAME}}, ${{env.NAME}},
 #   ${{vars.NAME}}, ${{github.NAME}}, ${{secrets.DB.PASSWORD}} or
 #   ${{env.DB_PASSWORD||'x'}}
-# - a path that starts with /bin/, /etc/, /home/, /opt/, /tmp/, /usr/, /var/
-#   or /Users/<name>/
+# - a path that starts with /bin/, /etc/, /home/, /opt/, /tmp/, /usr/ or
+#   /var/, then holds only letters, digits, `_`, `.`, `/` and `-`, such as
+#   /tmp/db-pass.word_1
+# - a path that starts with /Users/<name>/, where <name> holds only letters
+#   and digits, then holds only letters, digits, `_`, `.` and `/`
 # The letters in each of these kinds match in any case, such as $DbPassword,
 # /TMP/dbpassword or the password $ecretPass. gitleaks matches the stopwords
 # in any case, and the (?i) of (?i)^true|false|null$ applies to the default
 # regexes after it.
+# A value with a character that a kind above does not hold in that place, or
+# with a name of one letter after secrets, env, vars or github, is not of that
+# kind: database-password reports values such as $DB_PASSWORD1,
+# ${DB_PASSWORD1}, %DB_PASSWORD1%, {{db-pass}}, ${{secrets.D}}, ${{env.D}},
+# ${{vars.D}}, ${{github.D}}, /tmp/pa$sword1, /Users/app/db-password or
+# /Users/app_1/dbpassword.
 # The letters in the reference, {{...}}, ${{...}} and path kinds are ASCII
 # letters, and the digits in those kinds are ASCII digits, since the default
 # regexes for them use \w and other classes of ASCII letters and digits, such
