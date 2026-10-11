@@ -38,11 +38,14 @@ useDefault = true
 # in any case, and the (?i) of (?i)^true|false|null$ applies to the default
 # regexes after it.
 # The letters in the {{...}} and ${{...}} kinds are ASCII letters, since the
-# default regexes for them use \w and [A-Za-z]. So database-password reports a
-# value with any other letter in it, such as {{p<U+00E4>ssword}} or
-# ${{secrets.P<U+00C4>SSWORD}}. The two exceptions are U+212A (the Kelvin
-# sign) and U+017F (the long s), which the (?i) matches as k and s, so it
-# does not report {{<U+212A>eyname}} or ${{secrets.pa<U+017F><U+017F>word}}.
+# default regexes for them use \w and [A-Za-z]. So a value with any other
+# letter in it, such as {{p<U+00E4>ssword}} or ${{secrets.P<U+00C4>SSWORD}},
+# is not of these kinds, and database-password reports it unless another
+# kind above matches it, such as {{p<U+00E4>sswordfalse}}, which contains
+# `false`, or {{<U+00E4>abcdefghijklmnopqrstuvwxyz}}, which holds the
+# alphabet. The two exceptions are U+212A (the Kelvin sign) and U+017F (the
+# long s), which the (?i) matches as k and s, so database-password does not
+# report {{<U+212A>eyname}} or ${{secrets.pa<U+017F><U+017F>word}}.
 # test/gitleaks-config.test.mjs runs gitleaks on a line of each of these kinds.
 
 [[rules]]

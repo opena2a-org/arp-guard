@@ -189,6 +189,10 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'ecretPass') },
   { id: 'database-password', kind: '{{<U+212A>eyname}}', line: urlLine('{{' + unicode('<U+212A>eyname') + '}}') },
   { id: 'database-password', kind: '${{secrets.pa<U+017F><U+017F>word}}', line: urlLine('$' + '{{' + unicode('secrets.pa<U+017F><U+017F>word') + '}}') },
+  // A value with a letter the {{...}} kind does not match, and that another
+  // kind matches.
+  { id: 'database-password', kind: 'unless another kind above matches it, such as {{p<U+00E4>sswordfalse}}', line: urlLine('{{' + unicode('p<U+00E4>sswordfalse') + '}}') },
+  { id: 'database-password', kind: `{{<U+00E4>${alphabet}}}, which holds the alphabet`, line: urlLine('{{' + unicode('<U+00E4>') + alphabet + '}}') },
 ]
 
 // Lines the secret scan reports, measured with GITLEAKS_VERSION, though they
