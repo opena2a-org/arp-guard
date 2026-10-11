@@ -177,14 +177,17 @@ function reasonOf(form, from = lines) {
 // What the comment at the top of .hmaignore says one rule form does: the text
 // after the form on its own line, then the indented lines under it, each
 // without the spaces at its end, so they do not read as a gap between words.
+// A line under a form is indented by four or more spaces, or by spaces and a
+// tab. It is read without the spaces before its first word or tab, so a tab in
+// its indentation stays in the description and is reported there.
 function describedAs(form, from = lines) {
   const comment = headerOf(from)
   const start = comment.findIndex((line) => line.match(FORM)?.[1] === form)
   if (start === -1) return null
   const said = [splitFormLine(comment[start]).description.trimEnd()]
   for (const line of comment.slice(start + 1)) {
-    if (!/^ {4,}\S/.test(line)) break
-    said.push(line.trim())
+    if (!/^(?: {4,}| *\t[ \t]*)\S/.test(line)) break
+    said.push(line.replace(/^ +/, '').trimEnd())
   }
   return said.join(' ')
 }
@@ -484,7 +487,9 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
 // A description is set off from the form by spaces only, and its words by one
 // space, so a tab in it is reported. A tab at its start ends the gap after the
 // form or its `# reason`; a tab between its words is named by the words on each
-// side, as a double space is, and so is a run of spaces with a tab in it.
+// side, as a double space is, and so is a run of spaces with a tab in it. A tab
+// in the indentation of a line under the form is named the same way, with the
+// line break before it read as one space.
 test('a tab at the start of a form\'s description or between its words is reported', () => {
   const withLine = (form, formLine) => {
     const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === form)
@@ -516,6 +521,21 @@ test('a tab at the start of a form\'s description or between its words is report
   // Two or more spaces followed by a tab are one gap, named with the tab and
   // the word after it, not as two spaces before an empty word.
   assert.match(descriptionProblem('!CHECK-ID', 'the check  \tis left off'), /has 2 spaces and a tab between "check" and "is"/)
+  // A line under a form indented by spaces and then a tab is still part of the
+  // description, and the lines under it too; its tab is named by the last word
+  // of the line above and the first word of its own.
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
+  for (const [under, named] of [
+    [`#${' '.repeat(28)}\tstill scored, still in the verdict and the exit`, /has a space and a tab between "is" and "still"/],
+    [`#${' '.repeat(4)}\t  still scored, still in the verdict and the exit`, /has 3 spaces and a tab between "is" and "still"/],
+  ]) {
+    const tabbed = lines.map((text, index) => (index === start + 1 ? under : text))
+    const said = describedAs('!CHECK-ID', tabbed)
+    assert.equal(said.split(/[ \t]+/).join(' '), describedAs('!CHECK-ID'), `${JSON.stringify(under)}: describedAs returned ${JSON.stringify(said)}`)
+    const problem = descriptionProblem('!CHECK-ID', said)
+    assert.match(problem ?? '', named, `${JSON.stringify(under)}: ${problem}`)
+    assert.ok(problem.startsWith('the description of `!CHECK-ID` has '), `${JSON.stringify(under)}: ${problem}`)
+  }
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
