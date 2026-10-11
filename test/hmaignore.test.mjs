@@ -152,14 +152,15 @@ function describedAs(form, from = lines) {
 // description's own words by one. describedAs reads a description from after
 // all the spaces of that gap, so one that is empty or starts with a space comes
 // from a form line with no description after such a gap: the form text left in
-// place, or nothing before the lines under it. A description that starts with
+// place, with or without a description set off from it by one space or a tab,
+// or nothing before the lines under it. A description that starts with
 // `#` holds part of the form, such as the `# reason` of `path:CHECK-ID # reason`.
 // Two or more spaces inside it are either part of the form read the same way or
 // a double space in the header's own words, so the message names the words on
 // each side.
 function descriptionProblem(form, said) {
   if (said === '' || said.startsWith(' ')) {
-    return `the line of \`${form}\` carries no description after the form; write it on that line, set off from the form by two or more spaces: "${said}"`
+    return `the line of \`${form}\` carries no description set off from the form by two or more spaces; write it on that line after such a gap: "${said}"`
   }
   if (said.startsWith('#')) {
     return `the description of \`${form}\` starts with \`#\`, so part of the form was read as its description: "${said}"`
@@ -227,11 +228,25 @@ test('a form line with no description after the form is reported as having none'
   for (const formLine of ['#   !CHECK-ID', '#   !CHECK-ID   ']) {
     const bare = lines.map((text, index) => (index === start ? formLine : text))
     const problem = descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', bare))
-    assert.match(problem, /the line of `!CHECK-ID` carries no description after the form/, `${JSON.stringify(formLine)}: ${problem}`)
+    assert.match(problem, /the line of `!CHECK-ID` carries no description set off from the form by two or more spaces/, `${JSON.stringify(formLine)}: ${problem}`)
     assert.doesNotMatch(problem, /between ""/, `${JSON.stringify(formLine)}: ${problem}`)
   }
-  assert.match(descriptionProblem('!CHECK-ID', '   !CHECK-ID still scored'), /carries no description after the form/)
-  assert.match(descriptionProblem('!CHECK-ID', ''), /carries no description after the form/)
+  assert.match(descriptionProblem('!CHECK-ID', '   !CHECK-ID still scored'), /carries no description set off from the form by two or more spaces/)
+  assert.match(descriptionProblem('!CHECK-ID', ''), /carries no description set off from the form by two or more spaces/)
+})
+
+// A form line whose description is set off from the form by one space or a tab
+// does carry a description; the message says it is not set off by two or more
+// spaces, not that there is none.
+test('a description set off from the form by one space or a tab is reported as not set off by two or more spaces', () => {
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
+  for (const formLine of ['#   !CHECK-ID the check is left off', '#   !CHECK-ID\tthe check is left off']) {
+    const close = lines.map((text, index) => (index === start ? formLine : text))
+    const problem = descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', close))
+    assert.match(problem, /the line of `!CHECK-ID` carries no description set off from the form by two or more spaces/, `${JSON.stringify(formLine)}: ${problem}`)
+    assert.doesNotMatch(problem, /no description after the form/, `${JSON.stringify(formLine)}: ${problem}`)
+  }
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
