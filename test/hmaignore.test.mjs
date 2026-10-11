@@ -251,7 +251,9 @@ test('a form line with no description after the form is reported as having none'
 
 // A form line whose description is set off from the form by one space or a tab
 // does carry a description; the message says it is not set off by two or more
-// spaces, not that there is none.
+// spaces, not that there is none. No gap comes right after the form, so
+// describedAs leaves the whole line in what it returns, even when a run of three
+// spaces and a word inside the description reads like a form and its gap.
 test('a description set off from the form by one space or a tab is reported as not set off by two or more spaces', () => {
   for (const [form, formLine] of [
     ['!CHECK-ID', '#   !CHECK-ID the check is left off'],
@@ -259,6 +261,8 @@ test('a description set off from the form by one space or a tab is reported as n
     // A double space inside the description is not the gap after the form.
     ['!CHECK-ID', '#   !CHECK-ID the check  is left off'],
     ['!CHECK-ID', '#   !CHECK-ID\tthe check  is left off'],
+    // Nor is three spaces, a word and two spaces inside it.
+    ['!CHECK-ID', '#   !CHECK-ID the check   is  left off'],
     // A `#` with no reason before the gap is not the `# reason` of the form, so
     // the gap after it is not the gap after the form.
     ['path:CHECK-ID', '#   path:CHECK-ID #   that one check on that one path'],
@@ -266,7 +270,9 @@ test('a description set off from the form by one space or a tab is reported as n
     const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === form)
     assert.notEqual(start, -1, `the comment at the top of .hmaignore does not describe the \`${form}\` form`)
     const close = lines.map((text, index) => (index === start ? formLine : text))
-    const problem = descriptionProblem(form, describedAs(form, close))
+    const said = describedAs(form, close)
+    assert.ok(said.startsWith(formLine.slice(1)), `${JSON.stringify(formLine)}: describedAs returned ${JSON.stringify(said)}`)
+    const problem = descriptionProblem(form, said)
     assert.match(problem, /carries no description set off from the form by two or more spaces/, `${JSON.stringify(formLine)}: ${problem}`)
     assert.ok(problem.startsWith(`the line of \`${form}\` `), `${JSON.stringify(formLine)}: ${problem}`)
     assert.doesNotMatch(problem, /no description after the form/, `${JSON.stringify(formLine)}: ${problem}`)
