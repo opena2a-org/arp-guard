@@ -195,11 +195,16 @@ test('the forms are read from the comment at the top of .hmaignore only', () => 
 // Spaces at the end of a form's line are not part of its description, the same
 // as spaces at the end of the lines under it.
 test('spaces at the end of a form\'s line do not widen the gap before the next line', () => {
-  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
-  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
-  const trailing = lines.map((text, index) => (index === start || index === start + 1 ? `${text}  ` : text))
-  assert.equal(describedAs('!CHECK-ID', trailing), describedAs('!CHECK-ID'))
-  assert.equal(descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', trailing)), null)
+  const forms = formsIn(lines)
+  assert.notEqual(forms.length, 0, 'the comment at the top of .hmaignore names no rule form')
+  for (const form of forms) {
+    const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === form)
+    const trailing = lines.map((text, index) => (index === start || index === start + 1 ? `${text}  ` : text))
+    const said = describedAs(form, trailing)
+    assert.equal(said, describedAs(form), `spaces at the end of the lines of \`${form}\` changed its description`)
+    const problem = descriptionProblem(form, said)
+    assert.equal(problem, null, problem)
+  }
 })
 
 test('a misread description is reported by what was found in it', () => {
