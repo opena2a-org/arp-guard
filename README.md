@@ -145,11 +145,16 @@ On `main`, this package re-exports that module directly, on an exact SDK pin, so
 
 ## Benchmark
 
-[OASB](https://github.com/opena2a-org/oasb) is a suite of 222 standardized attack scenarios
-mapped to MITRE ATLAS, and it ships ARP as its reference adapter.
+[OASB](https://github.com/opena2a-org/oasb) is a suite of 222 standardized test scenarios,
+and it ships ARP as its reference adapter.
 
-Two caveats on that number, both verifiable from a clean checkout:
+Three caveats on that number, all verifiable from a clean checkout:
 
+- Not every scenario maps to MITRE ATLAS. In OASB 0.4.0, 193 of the 222 sit in test
+  files that carry an ATLAS reference: 165 in files that name a technique and 28 in
+  files that name only a tactic. The other 29, in seven files, test baselines,
+  correlation and the L0/L2 plumbing rather than an attack. To list those files:
+  `find src/atomic src/integration src/baseline src/e2e -name '*.test.ts' -exec grep -L 'AML\.T' {} +`
 - OASB's own suite skips `E2E-003` (live network detection) pending a reliable
   cross-platform check, so network detection is not covered by the passing count.
 - The suite resolves ARP through an older `hackmyagent` that carries its own
