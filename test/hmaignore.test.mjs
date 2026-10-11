@@ -666,9 +666,10 @@ test('the comment says a path rule leaves the file read and takes its findings o
 })
 
 // hackmyagent (0.33.x) counts a `path:CHECK-ID` rule's excluded findings on the
-// same Scope line as a path rule's: with this file's one rule,
-// `package.json:AIM-001`, `secure --ci` prints "Scope 1 finding excluded by
-// .hmaignore path rules (1 medium)".
+// same Scope line as a path rule's: with this file's two rules,
+// `package.json:AIM-001` and `test/shim.test.mjs:NEMO-009`, `secure --ci`
+// prints "Scope 2 findings excluded by .hmaignore path rules (1 critical, 1
+// medium)".
 test('the comment says a path:CHECK-ID rule counts its findings on the Scope line', () => {
   const said = describedAs('path:CHECK-ID')
   assert.ok(said, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
@@ -684,4 +685,25 @@ test('AIM-001 is left out on package.json only, with a reason and an expiry', ()
     '.hmaignore should carry exactly one AIM-001 rule, `package.json:AIM-001 expires:<date> # <reason>`',
   )
   assert.notEqual(aim[0].parsed.expires, null, 'the AIM-001 rule carries no `expires:` date')
+})
+
+// test/shim.test.mjs runs the shim's entry point through `new Function`, which
+// hackmyagent (0.33.x) reports as NEMO-009, critical: with no rule for it,
+// `secure --ci` exits 1 on this repository.
+test('NEMO-009 is left out on test/shim.test.mjs only, with a reason and an expiry', () => {
+  const nemo = rules.filter(({ parsed }) => parsed.checkId === 'NEMO-009')
+  assert.deepEqual(
+    nemo.map(({ parsed }) => `${parsed.kind} ${parsed.path}`),
+    ['path-check test/shim.test.mjs'],
+    '.hmaignore should carry exactly one NEMO-009 rule, `test/shim.test.mjs:NEMO-009 expires:<date> # <reason>`',
+  )
+  assert.notEqual(nemo[0].parsed.expires, null, 'the NEMO-009 rule carries no `expires:` date')
+})
+
+// The rule's reason describes one call. A second call in that file would be
+// left out by the same rule unread, and with no call left the rule covers
+// nothing and is removed.
+test('test/shim.test.mjs calls `new Function` once, the call the NEMO-009 rule is for', () => {
+  const calls = readFileSync(path.join(root, 'test', 'shim.test.mjs'), 'utf8').match(/\bnew Function\(/g) ?? []
+  assert.equal(calls.length, 1, `test/shim.test.mjs calls \`new Function\` ${calls.length} times, and the NEMO-009 rule is for one call`)
 })
