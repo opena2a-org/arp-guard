@@ -513,6 +513,9 @@ test('a tab at the start of a form\'s description or between its words is report
   assert.match(descriptionProblem('!CHECK-ID', 'still\tscored,  still in the verdict'), /has a tab between "still" and "scored,"/)
   assert.match(descriptionProblem('!CHECK-ID', 'still  scored,\tstill in the verdict'), /has 2 spaces between "still" and "scored,"/)
   assert.match(descriptionProblem('!CHECK-ID', 'still scored,\t\t still'), /has a space and 2 tabs between "scored," and "still"/)
+  // Two or more spaces followed by a tab are one gap, named with the tab and
+  // the word after it, not as two spaces before an empty word.
+  assert.match(descriptionProblem('!CHECK-ID', 'the check  \tis left off'), /has 2 spaces and a tab between "check" and "is"/)
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
