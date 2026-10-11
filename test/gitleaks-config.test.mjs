@@ -15,7 +15,8 @@
 // The value a rule captures is also the text gitleaks tests its global
 // allowlist against, and that allowlist includes the one in the default
 // configuration .gitleaks.toml extends. NOT_REPORTED holds lines that match a
-// rule's regex and that gitleaks does not report for that reason.
+// rule's regex and that gitleaks does not report for that reason, one for each
+// kind of value the comment in .gitleaks.toml names.
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -107,22 +108,49 @@ const keyLine = (text) => `${['api', 'key'].join('_')} = "${text}"`
 const urlLine = (text) => `url = "${'postgres' + ':' + '//'}appuser${':' + text + '@'}db.internal:5432/app"`
 const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index)).join('')
 
-// Lines the secret scan does not report, measured with gitleaks 8.30.1. While
-// these rules captured the key name or the URL scheme, the allowlist was tested
-// against that text, and gitleaks reported each of these lines.
+// Lines the secret scan does not report, measured with gitleaks 8.30.1, each
+// with the words in the comment of .gitleaks.toml that name its kind of value.
+// While these rules captured the key name or the URL scheme, the allowlist was
+// tested against that text, and gitleaks reported each of these lines.
 const NOT_REPORTED = [
-  { id: 'api-key-generic', value: 'one repeated letter', line: keyLine('x'.repeat(32)) },
-  { id: 'api-key-generic', value: 'the alphabet in order', line: keyLine(`${alphabet}012345`) },
-  { id: 'database-password', value: 'one repeated letter', line: urlLine('x'.repeat(10)) },
-  { id: 'database-password', value: 'a reference of the form ${NAME}', line: urlLine('$' + '{DB_PASSWORD}') },
-  { id: 'database-password', value: 'a reference of the form $NAME', line: urlLine('$' + 'DB_PASSWORD') },
+  { id: 'api-key-generic', kind: 'one repeated letter', line: keyLine('x'.repeat(32)) },
+  { id: 'api-key-generic', kind: 'the alphabet in order', line: keyLine(`${alphabet}012345`) },
+  { id: 'api-key-generic', kind: 'starts with `true`', line: keyLine('true-not-a-real-value') },
+  { id: 'api-key-generic', kind: 'contains `false`', line: keyLine('not-a-false-real-value') },
+  { id: 'api-key-generic', kind: 'ends with `null`', line: keyLine('not-a-real-value-null') },
+  { id: 'api-key-generic', kind: 'in any case', line: keyLine('TRUE-not-a-real-value') },
+  { id: 'database-password', kind: 'one repeated letter', line: urlLine('x'.repeat(10)) },
+  { id: 'database-password', kind: 'the alphabet in order', line: urlLine(alphabet) },
+  { id: 'database-password', kind: 'starts with `true`', line: urlLine('trueblue2024') },
+  { id: 'database-password', kind: 'contains `false`', line: urlLine('not-a-false-pass') },
+  { id: 'database-password', kind: 'ends with `null`', line: urlLine('not-a-pass-null') },
+  { id: 'database-password', kind: 'a run of `*`', line: urlLine('*'.repeat(10)) },
+  { id: 'database-password', kind: 'a run of `.`', line: urlLine('.'.repeat(10)) },
+  { id: 'database-password', kind: '$NAME', line: urlLine('$' + 'DB_PASSWORD') },
+  { id: 'database-password', kind: '${NAME}', line: urlLine('$' + '{DB_PASSWORD}') },
+  { id: 'database-password', kind: 'a $ followed by digits', line: urlLine('$' + '12345678') },
+  { id: 'database-password', kind: '%NAME%', line: urlLine('%' + 'DB_PASSWORD' + '%') },
+  { id: 'database-password', kind: '{{name}}', line: urlLine('{{' + 'password' + '}}') },
+  { id: 'database-password', kind: '{{.Values.name}}', line: urlLine('{{' + '.Values.password' + '}}') },
+  { id: 'database-password', kind: '${{secrets.NAME}}', line: urlLine('$' + '{{' + 'secrets.DB_PASSWORD' + '}}') },
+  ...['bin', 'etc', 'home', 'opt', 'tmp', 'usr', 'var'].map((dir) => ({ id: 'database-password', kind: `/${dir}/`, line: urlLine(`/${dir}/dbpassword`) })),
+  { id: 'database-password', kind: '/Users/<name>/', line: urlLine('/Users/app/dbpassword') },
 ]
 
+// The comment of .gitleaks.toml as one line of text.
+const configComment = config.split('\n').filter((text) => text.startsWith('#')).map((text) => text.replace(/^#\s?(?:-\s)?/, '')).join(' ').replace(/\s+/g, ' ')
+
+test('the comment in .gitleaks.toml names each kind of value in NOT_REPORTED', () => {
+  for (const { id, kind } of NOT_REPORTED) {
+    assert.ok(configComment.includes(kind), `the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a kind of value ${id} does not report`)
+  }
+})
+
 test('gitleaks does not report a line whose value its global allowlist matches', { skip: gitleaks.error ? 'gitleaks is not on the PATH' : false }, () => {
-  for (const { id, value, line } of NOT_REPORTED) {
+  for (const { id, kind, line } of NOT_REPORTED) {
     const rule = rules.find((candidate) => candidate.id === id)
-    assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line with ${value}`)
+    assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line for ${JSON.stringify(kind)}`)
     const run = spawnSync('gitleaks', ['stdin', '--config', configPath, '--redact', '--verbose', '--no-color', '--no-banner'], { input: `${line}\n`, encoding: 'utf8' })
-    assert.equal(run.status, 0, `gitleaks ${gitleaks.stdout.trim()} reports the ${id} line whose value is ${value}:\n${run.stdout}\n${run.stderr}`)
+    assert.equal(run.status, 0, `gitleaks ${gitleaks.stdout.trim()} reports the ${id} line for ${JSON.stringify(kind)}:\n${run.stdout}\n${run.stderr}`)
   }
 })
