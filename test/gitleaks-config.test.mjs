@@ -9,15 +9,17 @@
 // The check reads the rules the way this file writes them: a `[[rules]]` table
 // with an `id` and a `regex` in a ''' literal string, with an optional leading
 // `(?i)`. It does not read `secretGroup`; a rule that sets it fails here until
-// parseRules learns it. Two tests also run gitleaks, one on the same lines and
-// one on the lines in NOT_REPORTED. They run only when the gitleaks on the
-// PATH is GITLEAKS_VERSION, and skip with a message otherwise.
+// parseRules learns it. Three tests also run gitleaks: one on the same lines,
+// one on the lines in NOT_REPORTED and one on the lines in REPORTED. They run
+// only when the gitleaks on the PATH is GITLEAKS_VERSION, and skip with a
+// message otherwise.
 //
 // The value a rule captures is also the text gitleaks tests its global
 // allowlist against, and that allowlist includes the one in the default
 // configuration .gitleaks.toml extends. NOT_REPORTED holds lines that match a
 // rule's regex and that gitleaks does not report for that reason, one for each
-// kind of value the comment in .gitleaks.toml names.
+// kind of value the comment in .gitleaks.toml names. REPORTED holds the lines
+// that comment names as close to one of those kinds and still reported.
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -140,6 +142,9 @@ const urlLine = (text) => `url = "${'postgres' + ':' + '//'}appuser${':' + text 
 const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index)).join('')
 // The stopword of the default allowlist that is not the alphabet.
 const stopword = ['014df517', '39d1', '4453', 'b7b3', '9930c563627c'].join('-')
+// The text with each <U+XXXX> in it replaced by that character, so the source
+// of this file stays ASCII and reads like the comment of .gitleaks.toml.
+const unicode = (text) => text.replace(/<U\+([0-9A-F]{4,6})>/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
 
 // Lines the secret scan does not report, measured with GITLEAKS_VERSION, each
 // with the words in the comment of .gitleaks.toml that name its kind of value.
@@ -182,6 +187,16 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'DbPassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('/TMP/dbpassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'ecretPass') },
+  { id: 'database-password', kind: '{{<U+212A>eyname}}', line: urlLine('{{' + unicode('<U+212A>eyname') + '}}') },
+  { id: 'database-password', kind: '${{secrets.pa<U+017F><U+017F>word}}', line: urlLine('$' + '{{' + unicode('secrets.pa<U+017F><U+017F>word') + '}}') },
+]
+
+// Lines the secret scan reports, measured with GITLEAKS_VERSION, though they
+// differ from a kind of value in NOT_REPORTED by one character, each with the
+// words in the comment of .gitleaks.toml that name it.
+const REPORTED = [
+  { id: 'database-password', kind: '{{p<U+00E4>ssword}}', line: urlLine('{{' + unicode('p<U+00E4>ssword') + '}}') },
+  { id: 'database-password', kind: '${{secrets.P<U+00C4>SSWORD}}', line: urlLine('$' + '{{' + unicode('secrets.P<U+00C4>SSWORD') + '}}') },
 ]
 
 // The comment of .gitleaks.toml as one line of text.
@@ -199,5 +214,23 @@ test('gitleaks does not report a line whose value its global allowlist matches',
     assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line for ${JSON.stringify(kind)}`)
     const run = spawnSync('gitleaks', ['stdin', '--config', configPath, '--redact', '--verbose', '--no-color', '--no-banner'], { input: `${line}\n`, encoding: 'utf8' })
     assert.equal(run.status, 0, `gitleaks ${gitleaks.stdout.trim()} reports the ${id} line for ${JSON.stringify(kind)}:\n${run.stdout}\n${run.stderr}`)
+  }
+})
+
+test('the comment in .gitleaks.toml names each value in REPORTED', () => {
+  for (const { id, kind } of REPORTED) {
+    assert.ok(configComment.includes(kind), `the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a value ${id} reports`)
+  }
+})
+
+test('gitleaks reports each line in REPORTED under its rule and prints no value', { skip }, () => {
+  for (const { id, kind, line } of REPORTED) {
+    const rule = rules.find((candidate) => candidate.id === id)
+    assert.ok(rule && compile(rule.regex).test(line), `${id} does not match its line for ${JSON.stringify(kind)}`)
+    const run = spawnSync('gitleaks', ['stdin', '--config', configPath, '--redact', '--verbose', '--no-color', '--no-banner'], { input: `${line}\n`, encoding: 'utf8' })
+    const output = `${run.stdout}\n${run.stderr}`
+    assert.equal(run.status, 1, `gitleaks ${gitleaks.stdout.trim()} does not report the ${id} line for ${JSON.stringify(kind)}:\n${output}`)
+    assert.match(output, new RegExp(`^RuleID:\\s+${id}$`, 'm'), `gitleaks reports the line for ${JSON.stringify(kind)}, but not under ${id}:\n${output}`)
+    assert.ok(!output.includes(unicode(kind)), `the output of gitleaks holds the value ${JSON.stringify(kind)}`)
   }
 })
