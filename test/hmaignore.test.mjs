@@ -191,15 +191,16 @@ function describedAs(form, from = lines) {
 
 // What is wrong with the description describedAs returned for a form, or null.
 // A form is set off from its description by two or more spaces, and the
-// description's own words by one. describedAs reads a description from after
-// all the spaces of that gap, so one that is empty or starts with a space comes
-// from a form line with no description after such a gap: the form text left in
-// place, with or without a description set off from it by one space or a tab,
-// or nothing before the lines under it. A description that starts with
+// description's own words by one space. describedAs reads a description from
+// after all the spaces of that gap, so one that is empty or starts with a space
+// comes from a form line with no description after such a gap: the form text
+// left in place, with or without a description set off from it by one space or
+// a tab, or nothing before the lines under it. A description that starts with
 // `#` holds part of the form, such as the `# reason` of `path:CHECK-ID # reason`.
-// Two or more spaces inside it are either part of the form read the same way or
-// a double space in the header's own words, so the message names the words on
-// each side.
+// One that starts with a tab comes from a gap that ends in a tab. Two or more
+// spaces or a tab inside it are either part of the form read the same way or a
+// gap in the header's own words that is not one space, so the message names
+// the words on each side.
 function descriptionProblem(form, said) {
   if (said === '' || said.startsWith(' ')) {
     return `the line of \`${form}\` carries no description set off from the form by two or more spaces; write it on that line after such a gap: "${said}"`
@@ -207,27 +208,37 @@ function descriptionProblem(form, said) {
   if (said.startsWith('#')) {
     return `the description of \`${form}\` starts with \`#\`, so part of the form was read as its description: "${said}"`
   }
-  const doubled = doubleSpaceIn(said)
-  if (doubled) return `the description of \`${form}\` has ${doubled}, where its words are set off by one: "${said}"`
+  if (said.startsWith('\t')) {
+    return `the description of \`${form}\` starts with a tab, so the gap that sets it off from the form is not spaces only; write that gap as two or more spaces: "${said}"`
+  }
+  const gap = notOneSpaceIn(said)
+  if (gap) return `the description of \`${form}\` has ${gap}, where its words are set off by one space: "${said}"`
   return null
 }
 
 // What is wrong with the `# reason` reasonOf returned for a form, or null: its
 // words are set off by one space, as a description's are.
 function reasonProblem(form, reason) {
-  const doubled = reason === null ? null : doubleSpaceIn(reason)
-  if (doubled) return `the \`# reason\` of \`${form}\` has ${doubled}, where its words are set off by one: "${reason}"`
+  const gap = reason === null ? null : notOneSpaceIn(reason)
+  if (gap) return `the \`# reason\` of \`${form}\` has ${gap}, where its words are set off by one space: "${reason}"`
   return null
 }
 
-// The first run of two or more spaces in a text, named by its width and the
-// words on each side of it, or null.
-function doubleSpaceIn(text) {
-  const gap = / {2,}/.exec(text)
+// The first run of spaces and tabs in a text that is not one space: two or more
+// spaces, or a tab with or without spaces beside it. Named by the spaces and
+// tabs it holds and the words on each side of it, or null.
+function notOneSpaceIn(text) {
+  const gap = /[ \t]*\t[ \t]*| {2,}/.exec(text)
   if (!gap) return null
-  const before = text.slice(0, gap.index).split(' ').at(-1)
-  const after = text.slice(gap.index + gap[0].length).split(' ')[0]
-  return `${gap[0].length} spaces between "${before}" and "${after}"`
+  const tabs = gap[0].split('\t').length - 1
+  const spaces = gap[0].length - tabs
+  const held = [
+    spaces === 0 ? null : spaces === 1 ? 'a space' : `${spaces} spaces`,
+    tabs === 0 ? null : tabs === 1 ? 'a tab' : `${tabs} tabs`,
+  ].filter(Boolean).join(' and ')
+  const before = text.slice(0, gap.index).split(/[ \t]/).at(-1)
+  const after = text.slice(gap.index + gap[0].length).split(/[ \t]/)[0]
+  return `${held} between "${before}" and "${after}"`
 }
 
 test('describedAs returns each form\'s description without the rest of the form', () => {
@@ -461,6 +472,40 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
   assert.equal(reasonOf('path:CHECK-ID', spacedTab), 'my  reason')
   assert.match(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', spacedTab)) ?? '', /2 spaces between "my" and "reason"/)
   assert.ok(describedAs('path:CHECK-ID', spacedTab).startsWith('\tthat one check'))
+})
+
+// A description is set off from the form by spaces only, and its words by one
+// space, so a tab in it is reported. A tab at its start ends the gap after the
+// form or its `# reason`; a tab between its words is named by the words on each
+// side, as a double space is, and so is a run of spaces with a tab in it.
+test('a tab at the start of a form\'s description or between its words is reported', () => {
+  const withLine = (form, formLine) => {
+    const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === form)
+    assert.notEqual(start, -1, `the comment at the top of .hmaignore does not describe the \`${form}\` form`)
+    return lines.map((text, index) => (index === start ? formLine : text))
+  }
+  for (const [form, formLine] of [
+    ['path:CHECK-ID', '#   path:CHECK-ID # my reason  \tthat one check'],
+    ['!CHECK-ID', '#   !CHECK-ID  \tthe check is left off'],
+  ]) {
+    const said = describedAs(form, withLine(form, formLine))
+    assert.ok(said.startsWith('\t'), `${JSON.stringify(formLine)}: describedAs returned ${JSON.stringify(said)}`)
+    const problem = descriptionProblem(form, said)
+    assert.ok(problem?.startsWith(`the description of \`${form}\` starts with a tab`), `${JSON.stringify(formLine)}: ${problem}`)
+  }
+  for (const [form, formLine, named] of [
+    ['path:CHECK-ID', '#   path:CHECK-ID # my reason   that one\tcheck', /has a tab between "one" and "check"/],
+    ['!CHECK-ID', '#   !CHECK-ID  the check \tis left off', /has a space and a tab between "check" and "is"/],
+  ]) {
+    const problem = descriptionProblem(form, describedAs(form, withLine(form, formLine)))
+    assert.match(problem ?? '', named, `${JSON.stringify(formLine)}: ${problem}`)
+    assert.ok(problem.startsWith(`the description of \`${form}\` has `), `${JSON.stringify(formLine)}: ${problem}`)
+  }
+  // The first gap that is not one space is the one named, whether it holds a
+  // tab or only spaces.
+  assert.match(descriptionProblem('!CHECK-ID', 'still\tscored,  still in the verdict'), /has a tab between "still" and "scored,"/)
+  assert.match(descriptionProblem('!CHECK-ID', 'still  scored,\tstill in the verdict'), /has 2 spaces between "still" and "scored,"/)
+  assert.match(descriptionProblem('!CHECK-ID', 'still scored,\t\t still'), /has a space and 2 tabs between "scored," and "still"/)
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
