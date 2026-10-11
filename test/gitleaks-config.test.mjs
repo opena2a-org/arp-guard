@@ -107,6 +107,8 @@ test('gitleaks reports each sample line under its rule and prints no value', { s
 const keyLine = (text) => `${['api', 'key'].join('_')} = "${text}"`
 const urlLine = (text) => `url = "${'postgres' + ':' + '//'}appuser${':' + text + '@'}db.internal:5432/app"`
 const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97 + index)).join('')
+// The stopword of the default allowlist that is not the alphabet.
+const stopword = ['014df517', '39d1', '4453', 'b7b3', '9930c563627c'].join('-')
 
 // Lines the secret scan does not report, measured with gitleaks 8.30.1, each
 // with the words in the comment of .gitleaks.toml that name its kind of value.
@@ -115,12 +117,15 @@ const alphabet = Array.from({ length: 26 }, (_, index) => String.fromCharCode(97
 const NOT_REPORTED = [
   { id: 'api-key-generic', kind: 'one repeated letter', line: keyLine('x'.repeat(32)) },
   { id: 'api-key-generic', kind: 'the alphabet in order', line: keyLine(`${alphabet}012345`) },
+  { id: 'api-key-generic', kind: stopword, line: keyLine(stopword) },
   { id: 'api-key-generic', kind: 'starts with `true`', line: keyLine('true-not-a-real-value') },
   { id: 'api-key-generic', kind: 'contains `false`', line: keyLine('not-a-false-real-value') },
   { id: 'api-key-generic', kind: 'ends with `null`', line: keyLine('not-a-real-value-null') },
   { id: 'api-key-generic', kind: 'in any case', line: keyLine('TRUE-not-a-real-value') },
+  { id: 'api-key-generic', kind: 'match in any case', line: keyLine(stopword.toUpperCase()) },
   { id: 'database-password', kind: 'one repeated letter', line: urlLine('x'.repeat(10)) },
   { id: 'database-password', kind: 'the alphabet in order', line: urlLine(alphabet) },
+  { id: 'database-password', kind: stopword, line: urlLine(stopword) },
   { id: 'database-password', kind: 'starts with `true`', line: urlLine('trueblue2024') },
   { id: 'database-password', kind: 'contains `false`', line: urlLine('not-a-false-pass') },
   { id: 'database-password', kind: 'ends with `null`', line: urlLine('not-a-pass-null') },
@@ -129,12 +134,17 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: '$NAME', line: urlLine('$' + 'DB_PASSWORD') },
   { id: 'database-password', kind: '${NAME}', line: urlLine('$' + '{DB_PASSWORD}') },
   { id: 'database-password', kind: 'a $ followed by digits', line: urlLine('$' + '12345678') },
+  { id: 'database-password', kind: 'digits in braces', line: urlLine('$' + '{12345678}') },
   { id: 'database-password', kind: '%NAME%', line: urlLine('%' + 'DB_PASSWORD' + '%') },
   { id: 'database-password', kind: '{{name}}', line: urlLine('{{' + 'password' + '}}') },
   { id: 'database-password', kind: '{{.Values.name}}', line: urlLine('{{' + '.Values.password' + '}}') },
   { id: 'database-password', kind: '${{secrets.NAME}}', line: urlLine('$' + '{{' + 'secrets.DB_PASSWORD' + '}}') },
+  ...['env', 'vars', 'github'].map((context) => ({ id: 'database-password', kind: '${{' + context + '.NAME}}', line: urlLine('$' + '{{' + context + '.DB_PASSWORD' + '}}') })),
   ...['bin', 'etc', 'home', 'opt', 'tmp', 'usr', 'var'].map((dir) => ({ id: 'database-password', kind: `/${dir}/`, line: urlLine(`/${dir}/dbpassword`) })),
   { id: 'database-password', kind: '/Users/<name>/', line: urlLine('/Users/app/dbpassword') },
+  { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'DbPassword') },
+  { id: 'database-password', kind: 'match in any case', line: urlLine('/TMP/dbpassword') },
+  { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'ecretPass') },
 ]
 
 // The comment of .gitleaks.toml as one line of text.
