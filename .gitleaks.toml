@@ -11,8 +11,17 @@ useDefault = true
 # The secret is also the text gitleaks tests the global allowlist against, and
 # that includes the allowlist of the default configuration extended above. So
 # api-key-generic and database-password do not report a value that allowlist
-# matches: one repeated letter or a value that holds the alphabet in order,
-# for example, and for database-password a $NAME or ${NAME} reference.
+# matches. For both rules, that is:
+# - one repeated letter, or a value that holds the alphabet in order
+# - a value that starts with `true`, contains `false` or ends with `null`, in
+#   any case, such as the password trueblue2024: the default regex
+#   (?i)^true|false|null$ does not group its alternatives
+# For database-password, it is also:
+# - a run of `*`, or a run of `.`
+# - a reference: $NAME, ${NAME}, a $ followed by digits, %NAME%, {{name}},
+#   {{.Values.name}} or ${{secrets.NAME}}
+# - a path that starts with /bin/, /etc/, /home/, /opt/, /tmp/, /usr/, /var/
+#   or /Users/<name>/
 # test/gitleaks-config.test.mjs runs gitleaks on a line of each of these kinds.
 
 [[rules]]
