@@ -418,6 +418,8 @@ test('a form\'s `# reason` with no gap after it runs to the end of the line or t
 // spaces does, but it is not the gap before a description. A description set
 // off from the reason by a tab is reported as not set off by two or more
 // spaces, and a double space inside that description is not read as the gap.
+// The first of two tabs ends the reason, and a run of two or more spaces right
+// before the tab is the gap, so the description starts at the tab.
 test('a tab ends a form\'s `# reason` and is not the gap before its description', () => {
   assert.deepEqual(splitFormLine('   path:CHECK-ID # my reason\tdesc'), {
     reason: 'my reason',
@@ -432,6 +434,7 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
     '#   path:CHECK-ID # my reason\t  that one check',
     '#   path:CHECK-ID # my reason\tthat one check  on that one path',
     '#   path:CHECK-ID # my reason\tthat one check   on that one path',
+    '#   path:CHECK-ID # my reason\tthat\tone check',
   ]) {
     const tabbed = withLine(formLine)
     assert.equal(reasonOf('path:CHECK-ID', tabbed), 'my reason', JSON.stringify(formLine))
@@ -448,6 +451,16 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
   const spaced = withLine('#   path:CHECK-ID # my reason   that one\tcheck')
   assert.equal(reasonOf('path:CHECK-ID', spaced), 'my reason')
   assert.ok(describedAs('path:CHECK-ID', spaced).startsWith('that one\tcheck'))
+  // A run of two or more spaces directly before the tab is the gap, as the
+  // widest run with text after it, so a double space inside the reason is not.
+  assert.deepEqual(splitFormLine('   path:CHECK-ID # my  reason   \tthat one check'), {
+    reason: 'my  reason',
+    description: '\tthat one check',
+  })
+  const spacedTab = withLine('#   path:CHECK-ID # my  reason   \tthat one check')
+  assert.equal(reasonOf('path:CHECK-ID', spacedTab), 'my  reason')
+  assert.match(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', spacedTab)) ?? '', /2 spaces between "my" and "reason"/)
+  assert.ok(describedAs('path:CHECK-ID', spacedTab).startsWith('\tthat one check'))
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
