@@ -37,15 +37,22 @@ useDefault = true
 # /TMP/dbpassword or the password $ecretPass. gitleaks matches the stopwords
 # in any case, and the (?i) of (?i)^true|false|null$ applies to the default
 # regexes after it.
-# The letters in the {{...}} and ${{...}} kinds are ASCII letters, since the
-# default regexes for them use \w and [A-Za-z]. So a value with any other
-# letter in it, such as {{p<U+00E4>ssword}} or ${{secrets.P<U+00C4>SSWORD}},
-# is not of these kinds, and database-password reports it unless another
-# kind above matches it, such as {{p<U+00E4>sswordfalse}}, which contains
-# `false`, or {{<U+00E4>abcdefghijklmnopqrstuvwxyz}}, which holds the
-# alphabet. The two exceptions are U+212A (the Kelvin sign) and U+017F (the
-# long s), which the (?i) matches as k and s, so database-password does not
-# report {{<U+212A>eyname}} or ${{secrets.pa<U+017F><U+017F>word}}.
+# The letters in the reference, {{...}}, ${{...}} and path kinds are ASCII
+# letters, and the digits in the {{...}} and ${{...}} kinds are ASCII digits,
+# since the default regexes for them use \w and ranges of ASCII letters, such
+# as [A-Za-z]. A value with any other letter or digit in those places is not
+# of these kinds, so database-password reports values such as
+# $P<U+00C4>SSWORD_X, ${P<U+00C4>SSWORD}, %P<U+00C4>SSWORD%,
+# {{p<U+00E4>ssword}}, ${{secrets.P<U+00C4>SSWORD}}, /tmp/p<U+00E4>ssword,
+# /Users/<U+00E4>pp/dbpassword, {{pass<U+0663>word}} or
+# ${{secrets.DB_PASSWORD<U+0663>}}, where U+0663 is the Arabic-Indic digit
+# three. It still does not report such a value when another kind above
+# matches it, such as {{p<U+00E4>sswordfalse}}, which contains `false`, or
+# {{<U+00E4>abcdefghijklmnopqrstuvwxyz}}, which holds the alphabet.
+# The only exceptions are two letters, U+212A (the Kelvin sign) and U+017F
+# (the long s), which the (?i) matches as k and s, so database-password does
+# not report $<U+212A>EYNAME_X, {{<U+212A>eyname}},
+# ${{secrets.pa<U+017F><U+017F>word}} or /tmp/pa<U+017F><U+017F>word.
 # test/gitleaks-config.test.mjs runs gitleaks on a line of each of these kinds.
 
 [[rules]]
