@@ -1,0 +1,20 @@
+{
+  "name": "arp-guard",
+  "version": "0.4.0",
+  "description": "Renamed to agent-runtime-protection. This package re-exports it.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "dependencies": {
+    "agent-runtime-protection": "0.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/agent-runtime-protection.git"
+  },
+  "license": "Apache-2.0"
+}

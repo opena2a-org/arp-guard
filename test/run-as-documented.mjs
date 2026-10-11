@@ -1,6 +1,6 @@
 // Runs README commands the way a reader runs them: pasted into bash, in its own
-// process, in a directory where `require('arp-guard')` resolves to this
-// repository's build. The commands are README text, so they are never evaluated
+// process, in a directory where `require('agent-runtime-protection')` resolves
+// to this repository's build. The commands are README text, so they are never evaluated
 // inside the test process. They get PATH and nothing else from the runner's
 // environment, and a time limit, so a script that never exits fails the test.
 // At the limit every process in the process group bash leads is stopped; a
@@ -39,9 +39,9 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   })
 }
 
-// Runs `commands` with bash in a scratch directory whose `node_modules/arp-guard`
-// is this repository, so the package resolves to `dist/index.js` exactly as an
-// installed copy would. `node` on the child's PATH is the one running the tests.
+// Runs `commands` with bash in a scratch directory whose
+// `node_modules/agent-runtime-protection` is this repository, so the package
+// resolves to `dist/index.js` exactly as an installed copy would. `node` on the child's PATH is the one running the tests.
 // Resolves to the lines the commands printed to stdout; rejects if they time
 // out, exit non-zero or print to stderr.
 //
@@ -49,10 +49,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 // exits can be a child of bash rather than bash itself. bash therefore leads its
 // own process group, and the time limit stops the whole group, not only bash.
 export async function runAsDocumented(commands, { timeout = 30_000 } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'arp-guard-readme-'))
+  const dir = mkdtempSync(join(tmpdir(), 'agent-runtime-protection-readme-'))
   try {
     mkdirSync(join(dir, 'node_modules'))
-    symlinkSync(root, join(dir, 'node_modules', 'arp-guard'), 'junction')
+    symlinkSync(root, join(dir, 'node_modules', 'agent-runtime-protection'), 'junction')
     const PATH = [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter)
     const run = await new Promise((resolve, reject) => {
       const child = spawn('bash', ['-c', commands], {
