@@ -430,7 +430,8 @@ test('a form\'s `# reason` with no gap after it runs to the end of the line or t
 // off from the reason by a tab is reported as not set off by two or more
 // spaces, and a double space inside that description is not read as the gap.
 // The first of two tabs ends the reason, and a run of two or more spaces right
-// before the tab is the gap, so the description starts at the tab.
+// before the tab is the gap when it is the widest run of two or more spaces
+// before the tab, so the description starts at the tab.
 test('a tab ends a form\'s `# reason` and is not the gap before its description', () => {
   assert.deepEqual(splitFormLine('   path:CHECK-ID # my reason\tdesc'), {
     reason: 'my reason',
@@ -472,6 +473,12 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
   assert.equal(reasonOf('path:CHECK-ID', spacedTab), 'my  reason')
   assert.match(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', spacedTab)) ?? '', /2 spaces between "my" and "reason"/)
   assert.ok(describedAs('path:CHECK-ID', spacedTab).startsWith('\tthat one check'))
+  // A run directly before the tab that is narrower than a run inside the
+  // reason is not the gap: the wider run is, so the description starts there.
+  assert.deepEqual(splitFormLine('   path:CHECK-ID # my   reason  \tthat one check'), {
+    reason: 'my',
+    description: 'reason  \tthat one check',
+  })
 })
 
 // A description is set off from the form by spaces only, and its words by one
