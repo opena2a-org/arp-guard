@@ -386,15 +386,18 @@ test('a double space inside a form\'s `# reason` is reported in the reason, not 
 })
 
 // A form's `# reason` with no run of two or more spaces after it is still read:
-// it runs to the end of the line, and the line carries no description set off
-// from the form, so describedAs leaves the whole line in what it returns.
-test('a form\'s `# reason` with no gap after it runs to the end of the line', () => {
+// it runs to the end of the line or to the first tab, and the line carries no
+// description set off from the form, so describedAs leaves the whole line in
+// what it returns.
+test('a form\'s `# reason` with no gap after it runs to the end of the line or to the first tab', () => {
   const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === 'path:CHECK-ID')
   assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
   const withLine = (formLine) => lines.map((text, index) => (index === start ? formLine : text))
   for (const [formLine, reason] of [
     ['#   path:CHECK-ID # my reason', 'my reason'],
     ['#   path:CHECK-ID # my reason x', 'my reason x'],
+    // A tab ends the reason before the end of the line.
+    ['#   path:CHECK-ID # my reason\tx', 'my reason'],
     // One space at the end of the line is not part of the reason.
     ['#   path:CHECK-ID # my reason ', 'my reason'],
   ]) {
