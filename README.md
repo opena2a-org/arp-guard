@@ -117,11 +117,15 @@ Detects prompt injection, jailbreaks, data exfiltration, MCP exploitation, and A
 |-------|------|----------|
 | L0: Rules | Free | Pattern matching on every event |
 | L1: Statistical | Free | Z-score anomaly detection |
-| L2: LLM-Assisted | Budget-controlled | Micro-prompts for ambiguous events |
+| L2: LLM-Assisted | Budget-controlled | Micro-prompts for events not classified `normal` |
 
-L2 runs only when L1 flags an event, its severity is at or above
-`intelligence.minSeverityForLlm` (default `medium`), and the budget allows it. Default
-budget: $5/month (`intelligence.budgetUsd`).
+An event qualifies for L2 when it is not classified `normal`, its severity is at or above
+`intelligence.minSeverityForLlm` (default `medium`), and the budget allows it. L1 does not
+have to flag the event: one a monitor already classified, such as `Suspicious binary
+executed` (violation, high), qualifies from the first event, before L1 has a baseline.
+Default budget: $5/month (`intelligence.budgetUsd`) and 20 calls per hour
+(`intelligence.maxCallsPerHour`). To send fewer events, raise
+`intelligence.minSeverityForLlm` to `high` or `critical`.
 
 L2 is on by default, and the default adapter picks its destination from the environment:
 `ANTHROPIC_API_KEY` if set, otherwise `OPENAI_API_KEY`, otherwise a local Ollama at
