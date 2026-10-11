@@ -129,6 +129,36 @@ test('Quick Start is the first section and the caveat section follows it', () =>
   assert.equal(second, '## What `npm install` delivers today')
 })
 
+// The lines from a `## ` heading up to the next one, skipping `## ` lines inside
+// fenced code blocks the way sections() does.
+function sectionLines(lines, heading) {
+  const headings = new Set(sections(lines))
+  const start = lines.indexOf(heading)
+  assert.notEqual(start, -1, `no ${heading} section`)
+  const rest = lines.slice(start + 1)
+  const next = rest.findIndex((line) => headings.has(line))
+  return next === -1 ? rest : rest.slice(0, next)
+}
+
+// Not every OASB scenario carries a MITRE ATLAS reference, so the README gives
+// the mapped count instead of calling the whole suite mapped, and the parts it
+// names add up to the suite size it states.
+test('the Benchmark section gives how many OASB scenarios map to MITRE ATLAS', () => {
+  const text = sectionLines(readme, '## Benchmark').join(' ').replace(/\s+/g, ' ')
+  assert.doesNotMatch(text, /scenarios mapped to MITRE ATLAS/)
+  const suite = /a suite of (\d+) standardized/.exec(text)
+  assert.ok(suite, 'the section does not state the suite size')
+  const counts =
+    /(\d+) of the (\d+) sit in test files that carry an ATLAS reference: (\d+) in files that name a technique and (\d+) in files that name only a tactic\. The other (\d+),/.exec(
+      text,
+    )
+  assert.ok(counts, 'the section does not give the ATLAS-mapped count')
+  const [mapped, total, technique, tactic, unmapped] = counts.slice(1).map(Number)
+  assert.equal(total, Number(suite[1]))
+  assert.equal(technique + tactic, mapped)
+  assert.equal(mapped + unmapped, total)
+})
+
 test('a `## ` line inside a code block is not a section', () => {
   const lines = ['## Quick Start', '```bash', '## comment', '```', '## Next']
   assert.deepEqual(sections(lines), ['## Quick Start', '## Next'])
