@@ -7,6 +7,13 @@ useDefault = true
 # secret, or the whole match when there is none, and --redact masks only that.
 # So a rule captures the value and nothing else, or captures nothing: the key
 # name, the URL scheme and the key type are in non-capturing groups.
+#
+# The secret is also the text gitleaks tests the global allowlist against, and
+# that includes the allowlist of the default configuration extended above. So
+# api-key-generic and database-password do not report a value that allowlist
+# matches: one repeated letter or a value that holds the alphabet in order,
+# for example, and for database-password a $NAME or ${NAME} reference.
+# test/gitleaks-config.test.mjs runs gitleaks on a line of each of these kinds.
 
 [[rules]]
 id = "api-key-generic"
