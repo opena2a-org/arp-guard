@@ -219,15 +219,23 @@ test('a misread description is reported by what was found in it', () => {
   assert.doesNotMatch(doubled, /starts with/, 'a double space inside a description is not the description starting with the form')
 })
 
-// A form line that carries nothing after the form leaves the form text in what
-// describedAs returns; the message says the line has no description, not that
-// there is a gap after an empty word.
+// A form line that carries no description after the form gives describedAs one
+// of two things. With nothing after the form, the form text is left in what it
+// returns, before the lines under the form. With spaces after the form, those
+// spaces are read as the gap before a description, so it returns the lines
+// under the form with a leading space and no form text. Either way the message
+// says the line has no description, not that there is a gap after an empty word.
 test('a form line with no description after the form is reported as having none', () => {
   const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
   assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
-  for (const formLine of ['#   !CHECK-ID', '#   !CHECK-ID   ']) {
+  for (const [formLine, returned] of [
+    ['#   !CHECK-ID', /^ {3}!CHECK-ID \S/],
+    ['#   !CHECK-ID   ', /^ (?!.*!CHECK-ID)\S/],
+  ]) {
     const bare = lines.map((text, index) => (index === start ? formLine : text))
-    const problem = descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', bare))
+    const said = describedAs('!CHECK-ID', bare)
+    assert.match(said, returned, `${JSON.stringify(formLine)}: describedAs returned ${JSON.stringify(said)}`)
+    const problem = descriptionProblem('!CHECK-ID', said)
     assert.match(problem, /the line of `!CHECK-ID` carries no description set off from the form by two or more spaces/, `${JSON.stringify(formLine)}: ${problem}`)
     assert.doesNotMatch(problem, /between ""/, `${JSON.stringify(formLine)}: ${problem}`)
   }
