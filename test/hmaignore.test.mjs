@@ -133,12 +133,13 @@ function formsIn(lines) {
 }
 
 // What the comment at the top of .hmaignore says one rule form does: the text
-// after the form on its own line, then the indented lines under it.
-function describedAs(form) {
-  const comment = headerOf(lines)
+// after the form on its own line, then the indented lines under it, each
+// without the spaces at its end, so they do not read as a gap between words.
+function describedAs(form, from = lines) {
+  const comment = headerOf(from)
   const start = comment.findIndex((line) => line.match(FORM)?.[1] === form)
   if (start === -1) return null
-  const said = [comment[start].replace(/^ {3}.*? {2,}/, '')]
+  const said = [comment[start].replace(/^ {3}.*? {2,}/, '').trimEnd()]
   for (const line of comment.slice(start + 1)) {
     if (!/^ {4,}\S/.test(line)) break
     said.push(line.trim())
@@ -182,6 +183,16 @@ test('describedAs returns each form\'s description without the rest of the form'
 test('the forms are read from the comment at the top of .hmaignore only', () => {
   const noted = [...lines, '#   note  the rule above is renewed each quarter']
   assert.deepEqual(formsIn(noted), formsIn(lines))
+})
+
+// Spaces at the end of a form's line are not part of its description, the same
+// as spaces at the end of the lines under it.
+test('spaces at the end of a form\'s line do not widen the gap before the next line', () => {
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
+  const trailing = lines.map((text, index) => (index === start || index === start + 1 ? `${text}  ` : text))
+  assert.equal(describedAs('!CHECK-ID', trailing), describedAs('!CHECK-ID'))
+  assert.equal(descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', trailing)), null)
 })
 
 test('a misread description is reported by what was found in it', () => {
