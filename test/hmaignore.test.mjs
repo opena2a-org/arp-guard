@@ -434,7 +434,8 @@ test('a form\'s `# reason` with no gap after it runs to the end of the line or t
 // spaces, and a double space inside that description is not read as the gap.
 // The first of two tabs ends the reason, and a run of two or more spaces right
 // before the tab is the gap when it is the widest run of two or more spaces
-// before the tab, so the description starts at the tab.
+// before the tab, so the description starts at the tab. When a run inside the
+// reason is as wide, that run is the gap, as the first of two runs as wide.
 test('a tab ends a form\'s `# reason` and is not the gap before its description', () => {
   assert.deepEqual(splitFormLine('   path:CHECK-ID # my reason\tdesc'), {
     reason: 'my reason',
@@ -479,6 +480,12 @@ test('a tab ends a form\'s `# reason` and is not the gap before its description'
   // A run directly before the tab that is narrower than a run inside the
   // reason is not the gap: the wider run is, so the description starts there.
   assert.deepEqual(splitFormLine('   path:CHECK-ID # my   reason  \tthat one check'), {
+    reason: 'my',
+    description: 'reason  \tthat one check',
+  })
+  // A run directly before the tab as wide as a run inside the reason is not
+  // the gap either: the first of the two runs is.
+  assert.deepEqual(splitFormLine('   path:CHECK-ID # my  reason  \tthat one check'), {
     reason: 'my',
     description: 'reason  \tthat one check',
   })
