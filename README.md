@@ -69,7 +69,7 @@ const arp = new AgentRuntimeProtection({ agentName: 'my-agent' });
 await arp.start();
 
 // Agent runs normally — ARP monitors in background
-// Process spawns, network connections and file access are monitored
+// Process spawns, network connections and file changes under the working directory are monitored
 
 await arp.stop();
 ```
@@ -97,6 +97,8 @@ prompt high     [DE-001] System prompt extraction — attempting to extract syst
 ```
 
 Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply. For MCP tool calls, `new MCPProtocolInterceptor(arp.getEngine(), allowedTools)` has `scanToolCall(toolName, args)`; for A2A messages, `new A2AProtocolInterceptor(arp.getEngine(), trustedAgents)` has `scanMessage(from, to, content)`. An interceptor scans nothing until its own `start()`. Each call returns the matches and emits an event for each one, which `arp.onEvent` handlers and the alert rules receive. `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](#intelligence-stack) describes.
+
+File reads are not monitored by default. The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read. With `interceptors: { filesystem: { enabled: true } }` in the config, ARP also reports reads of a fixed list of sensitive paths (`.ssh`, `.aws`, `.env` and others) made through `fs.readFile` or `fs.readFileSync`; a read through `fs.promises`, a stream or `fs.open` is not reported, and neither is a read of any other path.
 
 ## AI-Layer Scanning
 
