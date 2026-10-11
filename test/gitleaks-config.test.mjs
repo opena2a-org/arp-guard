@@ -158,7 +158,7 @@ const NOT_REPORTED = [
   { id: 'api-key-generic', kind: 'contains `false`', line: keyLine('not-a-false-real-value') },
   { id: 'api-key-generic', kind: 'ends with `null`', line: keyLine('not-a-real-value-null') },
   { id: 'api-key-generic', kind: '`null`, in any case', line: keyLine('TRUE-not-a-real-value') },
-  { id: 'api-key-generic', kind: 'match in any case', line: keyLine(stopword.toUpperCase()) },
+  { id: 'api-key-generic', kind: 'the stopwords in any case', line: keyLine(stopword.toUpperCase()) },
   { id: 'database-password', kind: 'one repeated letter', line: urlLine('x'.repeat(10)) },
   { id: 'database-password', kind: 'the alphabet in order', line: urlLine(alphabet) },
   { id: 'database-password', kind: stopword, line: urlLine(stopword) },
