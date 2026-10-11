@@ -132,6 +132,12 @@ function formsIn(lines) {
   return headerOf(lines).map((line) => line.match(FORM)?.[1]).filter(Boolean)
 }
 
+// A form line up to the end of the gap before its description: the form, then
+// the `# reason` a form may carry, as `path:CHECK-ID # reason` does, then two or
+// more spaces. The gap must come right after them, so a description set off by
+// one space or a tab is not read from after a double space inside it.
+const FORM_AND_GAP = /^ {3}\S+(?: # \S.*?)? {2,}/
+
 // What the comment at the top of .hmaignore says one rule form does: the text
 // after the form on its own line, then the indented lines under it, each
 // without the spaces at its end, so they do not read as a gap between words.
@@ -139,7 +145,7 @@ function describedAs(form, from = lines) {
   const comment = headerOf(from)
   const start = comment.findIndex((line) => line.match(FORM)?.[1] === form)
   if (start === -1) return null
-  const said = [comment[start].replace(/^ {3}.*? {2,}/, '').trimEnd()]
+  const said = [comment[start].replace(FORM_AND_GAP, '').trimEnd()]
   for (const line of comment.slice(start + 1)) {
     if (!/^ {4,}\S/.test(line)) break
     said.push(line.trim())
@@ -249,7 +255,13 @@ test('a form line with no description after the form is reported as having none'
 test('a description set off from the form by one space or a tab is reported as not set off by two or more spaces', () => {
   const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === '!CHECK-ID')
   assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `!CHECK-ID` form')
-  for (const formLine of ['#   !CHECK-ID the check is left off', '#   !CHECK-ID\tthe check is left off']) {
+  for (const formLine of [
+    '#   !CHECK-ID the check is left off',
+    '#   !CHECK-ID\tthe check is left off',
+    // A double space inside the description is not the gap after the form.
+    '#   !CHECK-ID the check  is left off',
+    '#   !CHECK-ID\tthe check  is left off',
+  ]) {
     const close = lines.map((text, index) => (index === start ? formLine : text))
     const problem = descriptionProblem('!CHECK-ID', describedAs('!CHECK-ID', close))
     assert.match(problem, /the line of `!CHECK-ID` carries no description set off from the form by two or more spaces/, `${JSON.stringify(formLine)}: ${problem}`)
