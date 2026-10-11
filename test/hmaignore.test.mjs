@@ -140,23 +140,28 @@ function formsIn(lines) {
 // of two or more spaces with text after it, the first of them if several are as
 // wide: the comment sets its descriptions in a column, so a double space inside
 // a reason or a description is narrower than the gap before the description.
+// A tab ends a `# reason` too, and only a run of two or more spaces before the
+// tab is read as the gap, so a description set off from the reason by a tab is
+// not read from after a double space inside it either.
 // When the only run of two or more spaces after a `# reason` ends the line, the
 // reason ends at it and the text after the gap is empty, as it is for a form
 // with no `# reason` and only spaces after it. With no run of two or more spaces
-// after a `# reason`, the reason runs to the end of the line, without the
-// whitespace at its end, and the line has no gap. With no gap, the text after it
-// is the whole line, form and all.
+// after a `# reason`, the reason runs to the end of the line or to the first tab,
+// without the whitespace at its end, and the line has no gap. With no gap, the
+// text after it is the whole line, form and all.
 function splitFormLine(line) {
   const reasonAt = /^ {3}\S+ # (?=\S)/.exec(line)
   if (reasonAt) {
     const rest = line.slice(reasonAt[0].length)
+    const tab = rest.indexOf('\t')
+    const beforeTab = tab === -1 ? rest : rest.slice(0, tab)
     let gap = null
-    for (const run of rest.matchAll(/ {2,}/g)) {
+    for (const run of beforeTab.matchAll(/ {2,}/g)) {
       const atEnd = run.index + run[0].length === rest.length
       if (gap === null || (!atEnd && run[0].length > gap[0].length)) gap = run
     }
     if (gap) return { reason: rest.slice(0, gap.index), description: rest.slice(gap.index + gap[0].length) }
-    return { reason: rest.trimEnd(), description: line }
+    return { reason: beforeTab.trimEnd(), description: line }
   }
   const gap = /^ {3}\S+ {2,}/.exec(line)
   return { reason: null, description: gap ? line.slice(gap[0].length) : line }
@@ -404,6 +409,42 @@ test('a form\'s `# reason` with no gap after it runs to the end of the line', ()
       JSON.stringify(formLine),
     )
   }
+})
+
+// A tab after a form's `# reason` ends the reason, as a run of two or more
+// spaces does, but it is not the gap before a description. A description set
+// off from the reason by a tab is reported as not set off by two or more
+// spaces, and a double space inside that description is not read as the gap.
+test('a tab ends a form\'s `# reason` and is not the gap before its description', () => {
+  assert.deepEqual(splitFormLine('   path:CHECK-ID # my reason\tdesc'), {
+    reason: 'my reason',
+    description: '   path:CHECK-ID # my reason\tdesc',
+  })
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === 'path:CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
+  const withLine = (formLine) => lines.map((text, index) => (index === start ? formLine : text))
+  for (const formLine of [
+    '#   path:CHECK-ID # my reason\tthat one check',
+    '#   path:CHECK-ID # my reason \tthat one check',
+    '#   path:CHECK-ID # my reason\t  that one check',
+    '#   path:CHECK-ID # my reason\tthat one check  on that one path',
+    '#   path:CHECK-ID # my reason\tthat one check   on that one path',
+  ]) {
+    const tabbed = withLine(formLine)
+    assert.equal(reasonOf('path:CHECK-ID', tabbed), 'my reason', JSON.stringify(formLine))
+    assert.equal(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', tabbed)), null, JSON.stringify(formLine))
+    const said = describedAs('path:CHECK-ID', tabbed)
+    assert.ok(said.startsWith(formLine.slice(1)), `${JSON.stringify(formLine)}: describedAs returned ${JSON.stringify(said)}`)
+    assert.match(
+      descriptionProblem('path:CHECK-ID', said) ?? '',
+      /the line of `path:CHECK-ID` carries no description set off from the form by two or more spaces/,
+      JSON.stringify(formLine),
+    )
+  }
+  // A run of two or more spaces before the tab is still the gap.
+  const spaced = withLine('#   path:CHECK-ID # my reason   that one\tcheck')
+  assert.equal(reasonOf('path:CHECK-ID', spaced), 'my reason')
+  assert.ok(describedAs('path:CHECK-ID', spaced).startsWith('that one\tcheck'))
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
