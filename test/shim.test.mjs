@@ -9,7 +9,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -35,21 +37,37 @@ test('the shim carries the license and the repository of the root package', () =
   assert.deepEqual(shim.repository, rootPackage.repository)
 })
 
-// The entry point is run with a `require` that records what it is asked for,
-// so the check does not depend on the root package being installed under its
-// own name next to the shim.
+// The shim is loaded the way an install loads it: by name, from a
+// `node_modules` directory that holds a copy of the files it publishes. Next
+// to the copy, under the root package's name, is a stand-in whose entry point
+// is a JSON file, so the check does not depend on the root package being built
+// or installed, and the test evaluates no source itself. Node lists under
+// `children` the modules a module loads that are not built in.
 test('the entry point of the shim requires the root package and exports what it gets', () => {
   assert.equal(shim.main, 'index.js')
-  const source = readFileSync(path.join(shimDir, shim.main), 'utf8')
-  const required = []
-  const engine = {}
-  const module = { exports: {} }
-  new Function('module', 'exports', 'require', source)(module, module.exports, (specifier) => {
-    required.push(specifier)
-    return engine
-  })
-  assert.deepEqual(required, [rootPackage.name])
-  assert.equal(module.exports, engine, 'the shim does not export what the root package exports')
+  const dir = mkdtempSync(path.join(tmpdir(), 'arp-guard-shim-'))
+  try {
+    const copy = path.join(dir, 'node_modules', shim.name)
+    const standIn = path.join(dir, 'node_modules', rootPackage.name)
+    mkdirSync(copy, { recursive: true })
+    for (const file of ['package.json', ...shim.files]) copyFileSync(path.join(shimDir, file), path.join(copy, file))
+    mkdirSync(standIn)
+    writeFileSync(path.join(standIn, 'package.json'), JSON.stringify({ name: rootPackage.name, main: 'engine.json' }))
+    writeFileSync(path.join(standIn, 'engine.json'), '{}')
+
+    const installed = createRequire(path.join(dir, 'index.js'))
+    const exported = installed(shim.name)
+    const entry = installed.cache[installed.resolve(shim.name)]
+    assert.equal(path.relative(realpathSync(dir), entry.filename), path.join('node_modules', shim.name, shim.main))
+    assert.deepEqual(
+      entry.children.map((child) => child.filename),
+      [installed.resolve(rootPackage.name)],
+      'the shim loads something other than the root package',
+    )
+    assert.equal(exported, installed(rootPackage.name), 'the shim does not export what the root package exports')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('the types of the shim re-export the root package', () => {

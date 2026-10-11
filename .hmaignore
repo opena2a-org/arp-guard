@@ -18,4 +18,3 @@
 # is reported as a `.hmaignore:<line>` error and is not applied.
 
 package.json:AIM-001 expires:2026-12-31 # agent-runtime-protection is a library that agents import, not an agent; it runs under the identity of the agent that loads it and has none of its own to declare
-test/shim.test.mjs:NEMO-009 expires:2026-12-31 # the test evaluates the shim's committed entry point, shim/arp-guard/index.js, with a require that records its argument; no input reaches the evaluated source

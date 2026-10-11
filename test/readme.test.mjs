@@ -854,88 +854,172 @@ test('the documented interceptor call prints what the Runtime monitoring section
   assert.deepEqual(printed, output.body)
 })
 
-// A script that does file operations in its scratch directory while a monitor
-// runs, and prints for each whether a filesystem event named the file: first
-// with the monitor's defaults, then with only the filesystem interceptor on.
-// `wallet.json` is on the interceptor's list of sensitive paths. Events from
-// the first second after start are left out, since a watcher can still report
-// the files written before it started. `readFile` and `readFileSync` are taken
-// from `fs` on the second line, before any monitor starts. The script holds no
-// single quote, so bash passes it to node as written.
-const FILE_PROBE = String.raw`
-const fs = require("fs");
-const { readFile, readFileSync } = require("fs");
-const { AgentRuntimeProtection } = require("agent-runtime-protection");
+// What the file probes below share: `observe` does file operations in the
+// scratch directory while a monitor runs, and prints for each whether a
+// filesystem event named its file. The script it is put in gives it `fs`, the
+// CommonJS module object, and `AgentRuntimeProtection`.
+//
+// No wait here is a fixed sleep. A watcher reports changes in the order they
+// were made, however late, and the interceptor reports a call when it is made.
+// So `fence` writes a file of its own and waits for the event that names it:
+// by then every event for an earlier operation has arrived. One fence after
+// start() keeps out what a watcher still reports of the files written before
+// it started, and one after the operations ends the observation. A watcher can
+// miss a file written before it was ready, so `fence` writes a new file every
+// half second until one is reported, and throws after about ten seconds with
+// none. Each operation returns a promise when it does not end within its call,
+// and the second fence is written once all have ended.
+const OBSERVE = String.raw`
 const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let fences = 0;
+async function fence(seen) {
+  const files = [];
+  for (let waited = 0; waited < 10000; waited += 25) {
+    if (waited % 500 === 0) {
+      files.push("fence-" + ++fences + ".txt");
+      fs.writeFileSync(files.at(-1), "x");
+    }
+    await tick(25);
+    if (seen.some((d) => files.some((file) => d.includes(file)))) return;
+  }
+  throw new Error("no filesystem event named any of " + files.length + " files written over ten seconds");
+}
 async function observe(label, config, cases) {
   const arp = new AgentRuntimeProtection({ agentName: "readme-probe", intelligence: { enabled: false }, ...config });
   const seen = [];
   arp.onEvent((event) => { if (event.source === "filesystem") seen.push(event.description); });
   await arp.start();
-  await tick(1000);
+  await fence(seen);
   const from = seen.length;
-  for (const [, , act] of cases) act();
-  await tick(1500);
+  await Promise.all(cases.map(([, , act]) => act()));
+  await fence(seen);
   await arp.stop();
   const named = seen.slice(from);
   for (const [name, file] of cases) {
     console.log(label + ", " + name + ": " + (named.some((d) => d.includes(file)) ? "reported" : "not reported"));
   }
 }
+`
+
+// The config the probes pass for the interceptor cases: the filesystem monitor
+// off and the filesystem interceptor on, so a filesystem event comes from the
+// interceptor. The process and network monitors stay on, as by default.
+const INTERCEPTOR = '{ monitors: { filesystem: { enabled: false } }, interceptors: { filesystem: { enabled: true } } }'
+
+// File operations first with the monitor's defaults, then with the filesystem
+// monitor off and the filesystem interceptor on, then the same with `dataDir`
+// set. `wallet.json` and `.env` are on the interceptor's list of sensitive
+// paths. `.opena2a/arp` is ARP's data directory by default, and the path of
+// `.opena2a/arp-old` starts with the path of that directory. `readFile` and
+// `readFileSync` are taken from `fs` on the second line, before any monitor
+// starts. The script holds no single quote, so bash passes it to node as
+// written.
+const FILE_PROBE = String.raw`
+const fs = require("fs");
+const { readFile, readFileSync } = require("fs");
+const { Worker } = require("worker_threads");
+const { AgentRuntimeProtection } = require("agent-runtime-protection");
+${OBSERVE}
+const done = (call) => new Promise((resolve) => call(resolve));
 (async () => {
-  for (const file of ["read.txt", "sync-wallet.json", "callback-wallet.json", "early-wallet.json", "early-cb-wallet.json", "promises-wallet.json", "stream-wallet.json", "open-wallet.json"]) {
+  for (const dir of [".opena2a/arp", ".opena2a/arp-old", "kept"]) fs.mkdirSync(dir, { recursive: true });
+  for (const file of ["read.txt", "sync-wallet.json", "callback-wallet.json", "early-wallet.json", "early-cb-wallet.json", "promises-wallet.json", "stream-wallet.json", "open-wallet.json", ".opena2a/arp/data-wallet.json", ".opena2a/arp-old/.env", "worker-wallet.json", "kept/kept-wallet.json"]) {
     fs.writeFileSync(file, "FAKE");
   }
   await observe("default", {}, [
     ["write a new file", "written.txt", () => fs.writeFileSync("written.txt", "x")],
     ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
   ]);
-  await observe("interceptor", { monitors: { filesystem: { enabled: false } }, interceptors: { filesystem: { enabled: true } } }, [
+  await observe("interceptor", ${INTERCEPTOR}, [
     ["fs.readFileSync of a sensitive path", "sync-wallet.json", () => fs.readFileSync("sync-wallet.json")],
-    ["fs.readFile of a sensitive path", "callback-wallet.json", () => fs.readFile("callback-wallet.json", () => {})],
+    ["fs.readFile of a sensitive path", "callback-wallet.json", () => done((ended) => fs.readFile("callback-wallet.json", ended))],
     ["fs.readFileSync of another path", "read.txt", () => fs.readFileSync("read.txt")],
     ["readFileSync taken from fs before start(), of a sensitive path", "early-wallet.json", () => readFileSync("early-wallet.json")],
-    ["readFile taken from fs before start(), of a sensitive path", "early-cb-wallet.json", () => readFile("early-cb-wallet.json", () => {})],
+    ["readFile taken from fs before start(), of a sensitive path", "early-cb-wallet.json", () => done((ended) => readFile("early-cb-wallet.json", ended))],
     ["fs.promises read of a sensitive path", "promises-wallet.json", () => fs.promises.readFile("promises-wallet.json")],
-    ["stream read of a sensitive path", "stream-wallet.json", () => fs.createReadStream("stream-wallet.json").resume()],
+    ["stream read of a sensitive path", "stream-wallet.json", () => done((ended) => fs.createReadStream("stream-wallet.json").on("close", ended).resume())],
     ["fs.open of a sensitive path", "open-wallet.json", () => fs.closeSync(fs.openSync("open-wallet.json", "r"))],
+    ["fs.readFileSync of a sensitive path under the data directory", "data-wallet.json", () => fs.readFileSync(".opena2a/arp/data-wallet.json")],
+    ["fs.readFileSync of a sensitive path beside the data directory", "arp-old/.env", () => fs.readFileSync(".opena2a/arp-old/.env")],
+    ["readFileSync of a sensitive path in a worker thread", "worker-wallet.json", () => new Promise((ended, failed) => new Worker("require(\"fs\").readFileSync(\"worker-wallet.json\")", { eval: true }).on("error", failed).on("exit", ended))],
+  ]);
+  await observe("interceptor with dataDir set", { ...${INTERCEPTOR}, dataDir: "kept" }, [
+    ["fs.readFileSync of a sensitive path under that directory", "kept-wallet.json", () => fs.readFileSync("kept/kept-wallet.json")],
+    ["fs.readFileSync of a sensitive path under the default data directory", "data-wallet.json", () => fs.readFileSync(".opena2a/arp/data-wallet.json")],
   ]);
 })();
 `
 
 // Reads of a sensitive path from an ES module, by how the module imports `fs`,
-// with only the filesystem interceptor on. The imports are static, so they are
-// bound before the module runs and before start(). This script holds no single
-// quote either.
+// with the filesystem monitor off and the filesystem interceptor on. The
+// imports are static, so they are bound before the module runs and before
+// start(). This script holds no single quote either.
 const FILE_PROBE_ESM = String.raw`
 import fs from "node:fs";
 import * as fsNamespace from "node:fs";
-import { readFileSync } from "node:fs";
+import { readFile, readFileSync } from "node:fs";
 import { AgentRuntimeProtection } from "agent-runtime-protection";
+${OBSERVE}
+const done = (call) => new Promise((resolve) => call(resolve));
 const cases = [
-  ["a default import", "default-wallet.json", () => fs.readFileSync("default-wallet.json")],
-  ["a namespace import", "namespace-wallet.json", () => fsNamespace.readFileSync("namespace-wallet.json")],
-  ["a named import", "named-wallet.json", () => readFileSync("named-wallet.json")],
+  ["readFileSync through a default import", "default-wallet.json", () => fs.readFileSync("default-wallet.json")],
+  ["readFileSync through a namespace import", "namespace-wallet.json", () => fsNamespace.readFileSync("namespace-wallet.json")],
+  ["readFileSync through a named import", "named-wallet.json", () => readFileSync("named-wallet.json")],
+  ["readFile through a default import", "default-cb-wallet.json", () => done((ended) => fs.readFile("default-cb-wallet.json", ended))],
+  ["readFile through a namespace import", "namespace-cb-wallet.json", () => done((ended) => fsNamespace.readFile("namespace-cb-wallet.json", ended))],
+  ["readFile through a named import", "named-cb-wallet.json", () => done((ended) => readFile("named-cb-wallet.json", ended))],
 ];
 for (const [, file] of cases) fs.writeFileSync(file, "FAKE");
-const arp = new AgentRuntimeProtection({ agentName: "readme-probe", intelligence: { enabled: false }, monitors: { filesystem: { enabled: false } }, interceptors: { filesystem: { enabled: true } } });
-const seen = [];
-arp.onEvent((event) => { if (event.source === "filesystem") seen.push(event.description); });
-await arp.start();
-for (const [, , act] of cases) act();
-await new Promise((resolve) => setTimeout(resolve, 1500));
-await arp.stop();
-for (const [name, file] of cases) {
-  console.log("ES module, readFileSync through " + name + ": " + (seen.some((d) => d.includes(file)) ? "reported" : "not reported"));
-}
+await observe("ES module", ${INTERCEPTOR}, cases);
 `
+
+// A stand-in for the package whose watcher reports late: every event arrives
+// 1600 ms after the change it names, and one for `read.txt`, written before
+// start(), arrives 1600 ms after start(). That is later than either wait the
+// probe once slept through, one second after start() and a second and a half
+// after the operations, which on a loaded machine printed the two default
+// lines the wrong way round. An event still on its way does not keep the
+// script running once the probe has printed.
+const LATE_WATCHER = String.raw`
+const fs = require("fs");
+class AgentRuntimeProtection {
+  handlers = [];
+  onEvent(handler) { this.handlers.push(handler); }
+  report(file) {
+    setTimeout(() => { for (const handler of this.handlers) handler({ source: "filesystem", description: "File created/renamed: " + file }); }, 1600).unref();
+  }
+  async start() {
+    this.report("read.txt");
+    this.writeFileSync = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => { this.report(file); return this.writeFileSync.call(fs, file, ...rest); };
+  }
+  async stop() { fs.writeFileSync = this.writeFileSync; }
+}
+${OBSERVE}
+(async () => {
+  fs.writeFileSync("read.txt", "FAKE");
+  await observe("late watcher", {}, [
+    ["write a new file", "written.txt", () => fs.writeFileSync("written.txt", "x")],
+    ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
+  ]);
+})();
+`
+
+// The probe waits for events, not for a length of time, so what it prints does
+// not depend on how late the watcher reports.
+test('the file probe prints the same lines when the watcher reports late', { timeout: 60_000 }, async () => {
+  assert.deepEqual(await runAsDocumented(`node -e '${LATE_WATCHER}'`), [
+    'late watcher, write a new file: reported',
+    'late watcher, read a file: not reported',
+  ])
+})
 
 // The section once said file access was monitored. A read is file access, and
 // the default monitor reports no read. It then said the interceptor reports a
 // read made through `fs.readFile` or `fs.readFileSync`, which holds only for a
 // call on the CommonJS `fs` module object. When the monitor reports these
 // operations differently, change these lists and the section together.
-test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 20_000 }, async () => {
+test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 90_000 }, async () => {
   const section = sectionText(readme, '## Runtime monitoring')
 
   assert.deepEqual(await runAsDocumented(`node -e '${FILE_PROBE}'`), [
@@ -949,11 +1033,19 @@ test('the Runtime monitoring section says which file operations the monitor repo
     'interceptor, fs.promises read of a sensitive path: not reported',
     'interceptor, stream read of a sensitive path: not reported',
     'interceptor, fs.open of a sensitive path: not reported',
+    'interceptor, fs.readFileSync of a sensitive path under the data directory: not reported',
+    'interceptor, fs.readFileSync of a sensitive path beside the data directory: not reported',
+    'interceptor, readFileSync of a sensitive path in a worker thread: not reported',
+    'interceptor with dataDir set, fs.readFileSync of a sensitive path under that directory: not reported',
+    'interceptor with dataDir set, fs.readFileSync of a sensitive path under the default data directory: reported',
   ])
   assert.deepEqual(await runAsDocumented(`node --input-type=module -e '${FILE_PROBE_ESM}'`), [
     'ES module, readFileSync through a default import: reported',
     'ES module, readFileSync through a namespace import: not reported',
     'ES module, readFileSync through a named import: not reported',
+    'ES module, readFile through a default import: reported',
+    'ES module, readFile through a namespace import: not reported',
+    'ES module, readFile through a named import: not reported',
   ])
 
   assert.doesNotMatch(section, /file access/i)
@@ -969,6 +1061,9 @@ test('the Runtime monitoring section says which file operations the monitor repo
     'as a static import in the module that calls `start()` is',
     'or through `fs.promises`, a stream or `fs.open`.',
     'A read of any other path is not reported either.',
+    "one of a path that starts with the path of ARP's data directory (`dataDir` in the config, by default `.opena2a/arp` under the working directory)",
+    'which takes in the files under that directory and a path beside it such as `.opena2a/arp-old/.env`',
+    'and one made in a worker thread, which has an `fs` module object of its own.',
   ]) {
     assert.ok(section.includes(claim), `the Runtime monitoring section does not say: ${claim}`)
   }

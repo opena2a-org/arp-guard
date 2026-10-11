@@ -666,10 +666,9 @@ test('the comment says a path rule leaves the file read and takes its findings o
 })
 
 // hackmyagent (0.33.x) counts a `path:CHECK-ID` rule's excluded findings on the
-// same Scope line as a path rule's: with this file's two rules,
-// `package.json:AIM-001` and `test/shim.test.mjs:NEMO-009`, `secure --ci`
-// prints "Scope 2 findings excluded by .hmaignore path rules (1 critical, 1
-// medium)".
+// same Scope line as a path rule's: with this file's one rule,
+// `package.json:AIM-001`, `secure --ci` prints "Scope 1 finding excluded by
+// .hmaignore path rules (1 medium)".
 test('the comment says a path:CHECK-ID rule counts its findings on the Scope line', () => {
   const said = describedAs('path:CHECK-ID')
   assert.ok(said, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
@@ -687,23 +686,48 @@ test('AIM-001 is left out on package.json only, with a reason and an expiry', ()
   assert.notEqual(aim[0].parsed.expires, null, 'the AIM-001 rule carries no `expires:` date')
 })
 
-// test/shim.test.mjs runs the shim's entry point through `new Function`, which
-// hackmyagent (0.33.x) reports as NEMO-009, critical: with no rule for it,
-// `secure --ci` exits 1 on this repository.
-test('NEMO-009 is left out on test/shim.test.mjs only, with a reason and an expiry', () => {
-  const nemo = rules.filter(({ parsed }) => parsed.checkId === 'NEMO-009')
+// The rules that take findings in `file` out of the score and the exit code: a
+// path rule or a `path:CHECK-ID` rule on the file or on a directory that holds
+// it. A `!CHECK-ID` rule is not one of them: its check is still scored.
+function rulesCovering(file, from = rules) {
+  return from.filter(({ parsed }) => {
+    if (parsed.path === undefined) return false
+    const rulePath = path.posix.normalize(parsed.path).replace(/\/$/, '')
+    return rulePath === '.' || file === rulePath || file.startsWith(`${rulePath}/`)
+  })
+}
+
+// test/shim.test.mjs once ran the shim's entry point through `new Function`,
+// which hackmyagent (0.33.x) reports as NEMO-009, critical, and a
+// `test/shim.test.mjs:NEMO-009` rule left that finding out. The rule left out
+// every NEMO-009 finding in the file, whatever was written there later: with
+// an `eval` call and a second `new Function` added to the file, `secure --ci`
+// still exited 0 and counted three critical findings as excluded. The test now
+// loads the shim through module resolution, and with no rule on the file the
+// same two additions make `secure --ci` exit 1.
+test('no rule takes a finding in test/shim.test.mjs out of the score', () => {
+  const covering = rulesCovering('test/shim.test.mjs')
   assert.deepEqual(
-    nemo.map(({ parsed }) => `${parsed.kind} ${parsed.path}`),
-    ['path-check test/shim.test.mjs'],
-    '.hmaignore should carry exactly one NEMO-009 rule, `test/shim.test.mjs:NEMO-009 expires:<date> # <reason>`',
+    covering.map(({ at, text }) => `${at} ${text.trim()}`),
+    [],
+    'a rule on test/shim.test.mjs, or on a directory that holds it, leaves out whatever that file evaluates',
   )
-  assert.notEqual(nemo[0].parsed.expires, null, 'the NEMO-009 rule carries no `expires:` date')
 })
 
-// The rule's reason describes one call. A second call in that file would be
-// left out by the same rule unread, and with no call left the rule covers
-// nothing and is removed.
-test('test/shim.test.mjs calls `new Function` once, the call the NEMO-009 rule is for', () => {
-  const calls = readFileSync(path.join(root, 'test', 'shim.test.mjs'), 'utf8').match(/\bnew Function\(/g) ?? []
-  assert.equal(calls.length, 1, `test/shim.test.mjs calls \`new Function\` ${calls.length} times, and the NEMO-009 rule is for one call`)
+test('a rule covers a file when it names the file or a directory that holds it', () => {
+  const covers = (line) => rulesCovering('test/shim.test.mjs', [{ parsed: parseLine(line) }]).length === 1
+  for (const line of [
+    'test/shim.test.mjs:NEMO-009 expires:2026-12-31 # reason',
+    'test/shim.test.mjs',
+    './test/shim.test.mjs:NEMO-* # reason',
+    'test',
+    'test/',
+    './test/:NEMO-009 # reason',
+    '.',
+  ]) {
+    assert.ok(covers(line), `"${line}" should cover test/shim.test.mjs`)
+  }
+  for (const line of ['!NEMO-009', '!NEMO-*', 'package.json:AIM-001 # reason', 'test/shim.test', 'tes', 'shim/', 'test/harness/']) {
+    assert.ok(!covers(line), `"${line}" should not cover test/shim.test.mjs`)
+  }
 })
