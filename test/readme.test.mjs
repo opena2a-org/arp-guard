@@ -87,6 +87,18 @@ function section(lines, title) {
   }
 }
 
+// The text under `heading`, up to the next `## ` heading outside a code block,
+// with its code blocks and with each run of whitespace read as one space, so a
+// phrase is found wherever the paragraph wraps.
+function sectionText(lines, heading) {
+  const fenced = fencedLines(fencedBlocks(lines))
+  const isHeading = (line, i) => line.startsWith('## ') && !fenced.has(i + 1)
+  const start = lines.findIndex((line, i) => line === heading && isHeading(line, i))
+  assert.notEqual(start, -1, `the README has no ${heading} section`)
+  const next = lines.findIndex((line, i) => i > start && isHeading(line, i))
+  return lines.slice(start + 1, next === -1 ? lines.length : next).join('\n').replace(/\s+/g, ' ')
+}
+
 function quickStart(lines) {
   const blocks = fencedBlocks(lines)
   const index = blocks.findIndex((b) => b.lang === 'bash' && b.body.includes(INSTALL))
@@ -793,4 +805,76 @@ test('the documented interceptor call prints what the Runtime monitoring section
 
   assert.ok(printed.join('').length > 0, 'the interceptor call printed nothing')
   assert.deepEqual(printed, output.body)
+})
+
+// A script that does file operations in its scratch directory while a monitor
+// runs, and prints for each whether a filesystem event named the file: first
+// with the monitor's defaults, then with only the filesystem interceptor on.
+// `wallet.json` is on the interceptor's list of sensitive paths. Events from
+// the first second after start are left out, since a watcher can still report
+// the files written before it started. The script holds no single quote, so
+// bash passes it to node as written.
+const FILE_PROBE = String.raw`
+const fs = require("fs");
+const { AgentRuntimeProtection } = require("agent-runtime-protection");
+const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function observe(label, config, cases) {
+  const arp = new AgentRuntimeProtection({ agentName: "readme-probe", intelligence: { enabled: false }, ...config });
+  const seen = [];
+  arp.onEvent((event) => { if (event.source === "filesystem") seen.push(event.description); });
+  await arp.start();
+  await tick(1000);
+  const from = seen.length;
+  for (const [, , act] of cases) act();
+  await tick(1500);
+  await arp.stop();
+  const named = seen.slice(from);
+  for (const [name, file] of cases) {
+    console.log(label + ", " + name + ": " + (named.some((d) => d.includes(file)) ? "reported" : "not reported"));
+  }
+}
+(async () => {
+  for (const file of ["read.txt", "sync-wallet.json", "promises-wallet.json", "stream-wallet.json", "open-wallet.json"]) {
+    fs.writeFileSync(file, "FAKE");
+  }
+  await observe("default", {}, [
+    ["write a new file", "written.txt", () => fs.writeFileSync("written.txt", "x")],
+    ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
+  ]);
+  await observe("interceptor", { monitors: { filesystem: { enabled: false } }, interceptors: { filesystem: { enabled: true } } }, [
+    ["fs.readFileSync of a sensitive path", "sync-wallet.json", () => fs.readFileSync("sync-wallet.json")],
+    ["fs.readFileSync of another path", "read.txt", () => fs.readFileSync("read.txt")],
+    ["fs.promises read of a sensitive path", "promises-wallet.json", () => fs.promises.readFile("promises-wallet.json")],
+    ["stream read of a sensitive path", "stream-wallet.json", () => fs.createReadStream("stream-wallet.json").resume()],
+    ["fs.open of a sensitive path", "open-wallet.json", () => fs.closeSync(fs.openSync("open-wallet.json", "r"))],
+  ]);
+})();
+`
+
+// The section once said file access was monitored. A read is file access, and
+// the default monitor reports no read. When the monitor reports these
+// operations differently, change this list and the section together.
+test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 20_000 }, async () => {
+  const section = sectionText(readme, '## Runtime monitoring')
+
+  assert.deepEqual(await runAsDocumented(`node -e '${FILE_PROBE}'`), [
+    'default, write a new file: reported',
+    'default, read a file: not reported',
+    'interceptor, fs.readFileSync of a sensitive path: reported',
+    'interceptor, fs.readFileSync of another path: not reported',
+    'interceptor, fs.promises read of a sensitive path: not reported',
+    'interceptor, stream read of a sensitive path: not reported',
+    'interceptor, fs.open of a sensitive path: not reported',
+  ])
+
+  assert.doesNotMatch(section, /file access/i)
+  for (const claim of [
+    'file changes under the working directory',
+    'File reads are not monitored by default.',
+    'reports reads of a fixed list of sensitive paths',
+    'made through `fs.readFile` or `fs.readFileSync`',
+    'a read through `fs.promises`, a stream or `fs.open` is not reported, and neither is a read of any other path',
+  ]) {
+    assert.ok(section.includes(claim), `the Runtime monitoring section does not say: ${claim}`)
+  }
 })
