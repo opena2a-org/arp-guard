@@ -140,7 +140,10 @@ function formsIn(lines) {
 // of two or more spaces with text after it, the first of them if several are as
 // wide: the comment sets its descriptions in a column, so a double space inside
 // a reason or a description is narrower than the gap before the description.
-// With no such gap, the text after the gap is the whole line, form and all.
+// When the only run of two or more spaces after a `# reason` ends the line, the
+// reason ends at it and the text after the gap is empty, as it is for a form
+// with no `# reason` and only spaces after it. With no gap, that text is the
+// whole line, form and all.
 function splitFormLine(line) {
   const reasonAt = /^ {3}\S+ # (?=\S)/.exec(line)
   if (reasonAt) {
@@ -304,6 +307,9 @@ test('a description set off from the form by one space or a tab is reported as n
     ['!CHECK-ID', '#   !CHECK-ID\tthe check  is left off'],
     // Nor is three spaces, a word and two spaces inside it.
     ['!CHECK-ID', '#   !CHECK-ID the check   is  left off'],
+    // Nor is a ` # ` inside the description, after three spaces and a word, the
+    // `# reason` of the form.
+    ['!CHECK-ID', '#   !CHECK-ID the check   is # left  off'],
     // A `#` with no reason before the gap is not the `# reason` of the form, so
     // the gap after it is not the gap after the form.
     ['path:CHECK-ID', '#   path:CHECK-ID #   that one check on that one path'],
@@ -344,6 +350,30 @@ test('a double space inside a form\'s `# reason` is reported in the reason, not 
   assert.match(
     descriptionProblem('path:CHECK-ID', describedAs('path:CHECK-ID', inDescription)) ?? '',
     /the description of `path:CHECK-ID` has 2 spaces between "one" and "check"/,
+  )
+  // The gap may be two spaces wide, and of two runs as wide, the first ends the
+  // reason. Spaces at the end of the line are not that gap, even when they are
+  // wider than it.
+  for (const formLine of [
+    '#   path:CHECK-ID # my reason  that one check',
+    '#   path:CHECK-ID # my reason  that one  check',
+    '#   path:CHECK-ID # my reason  that one check   ',
+  ]) {
+    assert.equal(reasonOf('path:CHECK-ID', withLine(formLine)), 'my reason', JSON.stringify(formLine))
+  }
+  assert.equal(
+    describedAs('path:CHECK-ID', withLine('#   path:CHECK-ID # my reason  that one check   ')),
+    describedAs('path:CHECK-ID', plain),
+    'spaces at the end of the line were read as the gap before the description',
+  )
+  // With only spaces after the `# reason`, those spaces end it and the line
+  // carries no description, as a form with no `# reason` and only spaces after
+  // it does.
+  const spacesOnly = withLine('#   path:CHECK-ID # my reason   ')
+  assert.equal(reasonOf('path:CHECK-ID', spacesOnly), 'my reason')
+  assert.match(
+    descriptionProblem('path:CHECK-ID', describedAs('path:CHECK-ID', spacesOnly)) ?? '',
+    /the line of `path:CHECK-ID` carries no description set off from the form by two or more spaces/,
   )
 })
 
