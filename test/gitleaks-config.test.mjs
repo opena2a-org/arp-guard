@@ -192,6 +192,7 @@ const NOT_REPORTED = [
   { id: 'database-password', kind: '${{secrets.DB.PASSWORD}}', line: urlLine('$' + '{{' + 'secrets.DB.PASSWORD' + '}}') },
   { id: 'database-password', kind: "${{env.DB_PASSWORD||'x'}}", line: urlLine('$' + '{{' + "env.DB_PASSWORD||'x'" + '}}') },
   ...['bin', 'etc', 'home', 'opt', 'tmp', 'usr', 'var'].map((dir) => ({ id: 'database-password', kind: `/${dir}/`, line: urlLine(`/${dir}/dbpassword`) })),
+  { id: 'database-password', kind: '/tmp/db-pass.word_1', line: urlLine('/tmp/db-pass.word_1') },
   { id: 'database-password', kind: '/Users/<name>/', line: urlLine('/Users/app/dbpassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('$' + 'DbPassword') },
   { id: 'database-password', kind: 'match in any case', line: urlLine('/TMP/dbpassword') },
@@ -223,6 +224,17 @@ const REPORTED = [
   { id: 'database-password', kind: '/Users/app<U+0663>/dbpassword', line: urlLine(unicode('/Users/app<U+0663>/dbpassword')) },
   { id: 'database-password', kind: '{{pass<U+0663>word}}', line: urlLine('{{' + unicode('pass<U+0663>word') + '}}') },
   { id: 'database-password', kind: '${{secrets.DB_PASSWORD<U+0663>}}', line: urlLine('$' + '{{' + unicode('secrets.DB_PASSWORD<U+0663>') + '}}') },
+  // Values of ASCII characters only: a digit in NAME, a `-` between {{ and }},
+  // a name of one letter after secrets, env, vars and github, a `$` in a path,
+  // a `-` in a path under /Users/<name>/, and a `_` in <name>.
+  { id: 'database-password', kind: '$DB_PASSWORD1', line: urlLine('$' + 'DB_PASSWORD1') },
+  { id: 'database-password', kind: '${DB_PASSWORD1}', line: urlLine('$' + '{DB_PASSWORD1}') },
+  { id: 'database-password', kind: '%DB_PASSWORD1%', line: urlLine('%' + 'DB_PASSWORD1' + '%') },
+  { id: 'database-password', kind: '{{db-pass}}', line: urlLine('{{' + 'db-pass' + '}}') },
+  ...['secrets', 'env', 'vars', 'github'].map((context) => ({ id: 'database-password', kind: '${{' + context + '.D}}', line: urlLine('$' + '{{' + context + '.D' + '}}') })),
+  { id: 'database-password', kind: '/tmp/pa$sword1', line: urlLine('/tmp/pa' + '$' + 'sword1') },
+  { id: 'database-password', kind: '/Users/app/db-password', line: urlLine('/Users/app/db-password') },
+  { id: 'database-password', kind: '/Users/app_1/dbpassword', line: urlLine('/Users/app_1/dbpassword') },
 ]
 
 // The comment of .gitleaks.toml as one line of text.
@@ -251,6 +263,7 @@ const configComment = config.split('\n').filter((text) => text.startsWith('#')).
 // nearest after it, whatever the order here.
 const CLAIMS = [
   { words: 'So api-key-generic and database-password do not report a value that allowlist matches', reported: false },
+  { words: 'A value with a character that a kind above does not hold in that place, or with a name of one letter after secrets, env, vars or github, is not of that kind: database-password reports values such as', reported: true },
   { words: 'A value with any other letter or digit in those places is not of these kinds, so database-password reports values such as', reported: true },
   { words: 'It still does not report such a value when another kind above matches it, such as', reported: false },
   { words: 'The only exceptions are two letters, U+212A (the Kelvin sign) and U+017F (the long s), which the (?i) matches as k and s, so database-password does not report', reported: false },
@@ -470,12 +483,25 @@ test('the comment checks pass when a sentence that names the values in REPORTED 
 test('the comment checks fail when words after a value in its sentence say what a rule reports and are not in CLAIMS, even after a claim and with the verb that agrees', () => {
   const kind = '/tmp/pa<U+017F><U+017F>word'
   const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}.`
+  // The values in REPORTED that the comment names in the sentence that ends
+  // with ending. The comment names them in two sentences, and each value in
+  // one of the two.
+  const namedBefore = (ending) => {
+    const end = configComment.indexOf(ending) + ending.length
+    const sentence = configComment.slice(sentenceStart(configComment, end - 1), end)
+    return REPORTED.map((entry) => entry.kind).filter((named) => sentence.includes(named))
+  }
+  const digitThree = 'the Arabic-Indic digit three.'
+  const underscore = '/Users/app_1/dbpassword.'
+  assert.ok(configComment.includes(digitThree) && configComment.includes(underscore))
+  assert.equal(namedBefore(digitThree).length + namedBefore(underscore).length, REPORTED.length)
   // Each case ends with the words the problem quotes, which end with the words
   // after the value that say what a rule reports.
   const cases = [
     [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}}, but ${kind} is reported.`, `, but ${kind} is reported`],
     [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}, which it does not report either.`, ` or ${kind}, which it does not report`],
-    [REPORTED, true, REPORTED.map((entry) => entry.kind), 'the Arabic-Indic digit three.', 'the Arabic-Indic digit three, though in fact it does not report them.', 'digit three, though in fact it does not report'],
+    [REPORTED, true, namedBefore(digitThree), digitThree, 'the Arabic-Indic digit three, though in fact it does not report them.', 'digit three, though in fact it does not report'],
+    [REPORTED, true, namedBefore(underscore), underscore, '/Users/app_1/dbpassword, though in fact it does not report them.', 'dbpassword, though in fact it does not report'],
   ]
   for (const [entries, reported, kinds, from, to, quoted] of cases) {
     const comment = configComment.replace(from, () => to)
