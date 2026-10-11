@@ -142,8 +142,10 @@ function formsIn(lines) {
 // a reason or a description is narrower than the gap before the description.
 // When the only run of two or more spaces after a `# reason` ends the line, the
 // reason ends at it and the text after the gap is empty, as it is for a form
-// with no `# reason` and only spaces after it. With no gap, that text is the
-// whole line, form and all.
+// with no `# reason` and only spaces after it. With no run of two or more spaces
+// after a `# reason`, the reason runs to the end of the line, without the
+// whitespace at its end, and the line has no gap. With no gap, the text after it
+// is the whole line, form and all.
 function splitFormLine(line) {
   const reasonAt = /^ {3}\S+ # (?=\S)/.exec(line)
   if (reasonAt) {
@@ -154,6 +156,7 @@ function splitFormLine(line) {
       if (gap === null || (!atEnd && run[0].length > gap[0].length)) gap = run
     }
     if (gap) return { reason: rest.slice(0, gap.index), description: rest.slice(gap.index + gap[0].length) }
+    return { reason: rest.trimEnd(), description: line }
   }
   const gap = /^ {3}\S+ {2,}/.exec(line)
   return { reason: null, description: gap ? line.slice(gap[0].length) : line }
@@ -375,6 +378,32 @@ test('a double space inside a form\'s `# reason` is reported in the reason, not 
     descriptionProblem('path:CHECK-ID', describedAs('path:CHECK-ID', spacesOnly)) ?? '',
     /the line of `path:CHECK-ID` carries no description set off from the form by two or more spaces/,
   )
+})
+
+// A form's `# reason` with no run of two or more spaces after it is still read:
+// it runs to the end of the line, and the line carries no description set off
+// from the form, so describedAs leaves the whole line in what it returns.
+test('a form\'s `# reason` with no gap after it runs to the end of the line', () => {
+  const start = headerOf(lines).findIndex((line) => line.match(FORM)?.[1] === 'path:CHECK-ID')
+  assert.notEqual(start, -1, 'the comment at the top of .hmaignore does not describe the `path:CHECK-ID` form')
+  const withLine = (formLine) => lines.map((text, index) => (index === start ? formLine : text))
+  for (const [formLine, reason] of [
+    ['#   path:CHECK-ID # my reason', 'my reason'],
+    ['#   path:CHECK-ID # my reason x', 'my reason x'],
+    // One space at the end of the line is not part of the reason.
+    ['#   path:CHECK-ID # my reason ', 'my reason'],
+  ]) {
+    const close = withLine(formLine)
+    assert.equal(reasonOf('path:CHECK-ID', close), reason, JSON.stringify(formLine))
+    assert.equal(reasonProblem('path:CHECK-ID', reasonOf('path:CHECK-ID', close)), null, JSON.stringify(formLine))
+    const said = describedAs('path:CHECK-ID', close)
+    assert.ok(said.startsWith(formLine.slice(1).trimEnd()), `${JSON.stringify(formLine)}: describedAs returned ${JSON.stringify(said)}`)
+    assert.match(
+      descriptionProblem('path:CHECK-ID', said) ?? '',
+      /the line of `path:CHECK-ID` carries no description set off from the form by two or more spaces/,
+      JSON.stringify(formLine),
+    )
+  }
 })
 
 test('the grammar check accepts the forms this file uses and rejects lines outside them', () => {
