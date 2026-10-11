@@ -13,15 +13,22 @@ useDefault = true
 # api-key-generic and database-password do not report a value that allowlist
 # matches. For both rules, that is:
 # - one repeated letter, or a value that holds the alphabet in order
+# - a value that holds 014df517-39d1-4453-b7b3-9930c563627c, the other
+#   stopword of the default allowlist
 # - a value that starts with `true`, contains `false` or ends with `null`, in
 #   any case, such as the password trueblue2024: the default regex
 #   (?i)^true|false|null$ does not group its alternatives
 # For database-password, it is also:
 # - a run of `*`, or a run of `.`
-# - a reference: $NAME, ${NAME}, a $ followed by digits, %NAME%, {{name}},
-#   {{.Values.name}} or ${{secrets.NAME}}
+# - a reference: $NAME, ${NAME}, a $ followed by digits or by digits in
+#   braces, %NAME%, {{name}}, {{.Values.name}}, ${{secrets.NAME}},
+#   ${{env.NAME}}, ${{vars.NAME}} or ${{github.NAME}}
 # - a path that starts with /bin/, /etc/, /home/, /opt/, /tmp/, /usr/, /var/
 #   or /Users/<name>/
+# The letters in each of these kinds match in any case, such as $DbPassword,
+# /TMP/dbpassword or the password $ecretPass. gitleaks matches the stopwords
+# in any case, and the (?i) of (?i)^true|false|null$ applies to the default
+# regexes after it.
 # test/gitleaks-config.test.mjs runs gitleaks on a line of each of these kinds.
 
 [[rules]]
