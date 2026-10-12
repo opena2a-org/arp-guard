@@ -1122,7 +1122,10 @@ observe("silent watcher", {}, []);
 `
 
 // The give-up path of writeUntilReported: each stand-in waits out the whole
-// limit, about thirty seconds, so the two run at once.
+// limit, about thirty seconds, so the two run at once. The limit is a count of
+// ticks, not a clock, so the run with the silent watcher is timed: a timer
+// fires no sooner than its delay, and twelve hundred ticks of 25 ms take thirty
+// seconds. The test allows one second less.
 test('the file probe gives up on a watcher after sixty files and about thirty seconds', { timeout: 120_000, concurrency: true }, async (t) => {
   await Promise.all([
     t.test('a row whose files no event names reads not reported', async () => {
@@ -1132,13 +1135,16 @@ test('the file probe gives up on a watcher after sixty files and about thirty se
         'fence-only watcher, read a file: not reported',
       ])
     }),
-    t.test('a fence whose files no event names ends the run with an error', async () => {
+    t.test('a fence whose files no event names ends the run with an error after about thirty seconds', async () => {
+      const started = Date.now()
       await assert.rejects(runAsDocumented(`node -e '${SILENT_WATCHER}'`, { timeout: 90_000 }), (error) => {
         assert.match(error.message, /^the documented commands exited 1:/)
         assert.match(error.message, /Error: no filesystem event named any of the sixty files written over thirty seconds/)
         assert.match(error.message, /^fence files written: 60$/m)
         return true
       })
+      const elapsed = Date.now() - started
+      assert.ok(elapsed >= 29_000, `the run ended after ${elapsed} ms`)
     }),
   ])
 })
