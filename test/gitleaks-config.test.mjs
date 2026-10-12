@@ -21,8 +21,12 @@
 // kind of value the comment in .gitleaks.toml names. REPORTED holds the lines
 // that comment names as close to one of those kinds and still reported. The
 // comment checks read each kind from the sentence of the comment it is named
-// under, and fail when that sentence says the opposite, or says not with a word
-// they do not read.
+// under, and fail when that sentence says the opposite, or when the words in
+// it that say what a rule reports of the kind hold a word in NEGATING, a list
+// of words that can say not, that the checks do not read. A sentence that says
+// not with a word outside that list, such as excluding or other than, does not
+// fail for that word: "<rule> reports every value excluding <value>" is read
+// as saying the value is reported.
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -266,8 +270,11 @@ const NEGATED = /^(?:not|never|\w+n't) |^un(?=report)/i
 // a value, other than the words NEGATED read, fails the checks, since they do
 // not read it: `cannot report`, `is no longer reported`, `is not yet
 // reported`, `fails to report`, `Neither rule reports` and `is not unreported`
-// each fail. So a claim that passes says not only in a way NEGATED reads, and
-// the checks need not read more ways of saying it.
+// each fail. The list does not hold every word that can say not, and a claim
+// that says not with a word outside it, such as `excluding` or `other than`,
+// does not fail for that word: "<rule> reports every value excluding <value>"
+// is read as saying the value is reported, and "<rule> does not report values
+// other than <value>" as saying it is not.
 const NEGATING = /\b(?:not|no|nor|never|neither|nobody|nothing|nowhere|cannot|unable|without|\w+n['’]t|except\w*|fail\w*|lack\w*|refus\w*|stop\w*|ceas\w*|non\w*|un\w*report\w*)\b/i
 
 // The stops of a sentence, and the stops of a clause.
@@ -328,7 +335,7 @@ function unreadNegation(comment, verb, place, length) {
 // What is wrong with how the comment names the kinds of the entries, which
 // gitleaks reports when reported is true and does not report otherwise: a kind
 // the comment does not name, or names under a sentence that is not in claims,
-// that holds a word that can say not where the checks do not read it, or that
+// that holds a word in NEGATING that unreadNegation finds, or that
 // says the opposite, or names before words in its sentence that say what a
 // rule reports and are not in claims. A sentence in claims says a value is not
 // reported when the words that say so are NEGATED, and says it is reported
@@ -508,7 +515,7 @@ test('the comment checks read a sentence in the claims as saying a value is not 
   }
 })
 
-test('the comment checks fail on a sentence in the claims that says not with a word they do not read, whichever way it names a value', () => {
+test('the comment checks fail on each of ten sentences in the claims that say not with a word in NEGATING where they do not read it, for a value in NOT_REPORTED and for one in REPORTED', () => {
   const notReported = '/tmp/pa<U+017F><U+017F>word'
   const reported = '$P<U+00C4>SSWORD_X'
   // Each sentence with the word the problem names.
