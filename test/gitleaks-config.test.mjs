@@ -404,6 +404,25 @@ test('the comment checks read a sentence in the claims with any form of the verb
   }
 })
 
+test('the comment checks fail when the comment does not name a value in NOT_REPORTED or REPORTED', () => {
+  for (const [entries, reported, kind] of [[NOT_REPORTED, false, '{{<U+212A>eyname}}'], [REPORTED, true, '{{p<U+00E4>ssword}}']]) {
+    const comment = configComment.replaceAll(kind, '')
+    assert.notEqual(comment, configComment)
+    assert.ok(misnamed(comment, entries, reported).some((problem) => problem.includes(`does not name ${JSON.stringify(kind)}`)), comment)
+  }
+})
+
+test('the comment checks fail when a sentence that is not in CLAIMS names a value, even with the verb that agrees with it', () => {
+  const cases = [
+    [NOT_REPORTED, false, '{{<U+212A>eyname}}', 'database-password also does not report {{<U+212A>eyname}}.'],
+    [REPORTED, true, '{{p<U+00E4>ssword}}', 'database-password also reports {{p<U+00E4>ssword}}.'],
+  ]
+  for (const [entries, reported, kind, sentence] of cases) {
+    const comment = `${configComment} ${sentence}`
+    assert.ok(misnamed(comment, entries, reported).some((problem) => problem.includes(`names ${JSON.stringify(kind)}`) && problem.includes('which is not a sentence in CLAIMS')), comment)
+  }
+})
+
 test('gitleaks reports each line in REPORTED under its rule and prints no value', { skip }, () => {
   for (const { id, kind, line } of REPORTED) {
     const rule = rules.find((candidate) => candidate.id === id)
