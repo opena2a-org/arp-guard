@@ -223,8 +223,10 @@ const configComment = config.split('\n').filter((text) => text.startsWith('#')).
 
 // Words from each sentence in the comment of .gitleaks.toml that says a rule
 // reports, or does not report, a kind of value. A kind is named under the last
-// of these before it: in that sentence, or in the bullets and sentences after
-// it up to the next sentence that says what a rule reports.
+// sentence that says what a rule reports and that starts before the end of the
+// sentence the kind is in: that sentence, where it says so before or after the
+// kind, or else the last one before it, with the bullets and sentences after
+// that one.
 const CLAIMS = [
   'api-key-generic and database-password do not report a value that allowlist matches',
   'is not of these kinds, so database-password reports values such as',
@@ -236,8 +238,21 @@ const CLAIMS = [
 // one, such as /tmp/ in /tmp/p<U+00E4>ssword, is read as the longer one there.
 const KINDS = [...NOT_REPORTED, ...REPORTED].map(({ kind }) => kind)
 
-// The words in the comment that say a rule reports, or does not report, a value.
-const VERB = /\b(?:reports|do(?:es)? not report)\b/g
+// The words in the comment that say a rule reports, or does not report, a value:
+// each word that holds `report`, in any form and any case, such as reports,
+// report, reported or Reported, with the `do not` or `does not` before it. So a
+// kind named in or after a sentence such as "<kind> is reported by
+// database-password" is named under a sentence that is not in CLAIMS.
+const VERB = /\b(?:do(?:es)? not )?\w*report\w*/gi
+
+// The index in text where the sentence that holds the index from ends: the
+// first `.`, `!` or `?` from there on that a space or the end of the text
+// follows.
+function sentenceEnd(text, from) {
+  const stop = /[.!?](?=\s|$)/g
+  stop.lastIndex = from
+  return stop.exec(text)?.index ?? text.length
+}
 
 // Each index in text where part starts.
 function indexesOf(text, part) {
@@ -264,12 +279,13 @@ function misnamed(comment, entries, reported) {
     const places = placesOf(comment, kind)
     if (places.length === 0) problems.push(`the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a value ${id} ${says}`)
     for (const place of places) {
-      const verb = verbs.findLast((match) => match.index < place)
+      const end = sentenceEnd(comment, place + kind.length)
+      const verb = verbs.findLast((match) => match.index < end)
       const claim = verb && CLAIMS.find((words) => indexesOf(comment, words).some((start) => start <= verb.index && verb.index < start + words.length))
       if (!claim) {
         const under = verb ? JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length)) : 'no sentence that says what a rule reports'
         problems.push(`the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value ${id} ${says}, under ${under}, which is not a sentence in CLAIMS`)
-      } else if ((verb[0] === 'reports') !== reported) {
+      } else if (/\bnot\b/i.test(verb[0]) === reported) {
         problems.push(`the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value ${id} ${says}, under ${JSON.stringify(claim)}`)
       }
     }
@@ -307,6 +323,22 @@ test('the comment checks fail when the comment names a value in REPORTED where i
     assert.notEqual(comment, configComment)
     assert.notDeepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
     assert.notDeepEqual(misnamed(comment, REPORTED, true), [], comment)
+  }
+})
+
+test('the comment checks fail when a sentence with any form of the verb names a value in NOT_REPORTED as reported', () => {
+  const kind = '/tmp/pa<U+017F><U+017F>word'
+  const sentences = [
+    `${kind} is reported by database-password.`,
+    `Both rules report ${kind}.`,
+    `database-password reported ${kind} in a test run.`,
+    `Reported by database-password: ${kind}.`,
+    `database-password reports ${kind}.`,
+  ]
+  for (const sentence of sentences) {
+    const comment = configComment.replace(`\${{secrets.pa<U+017F><U+017F>word}} or ${kind}.`, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${sentence}`)
+    assert.notEqual(comment, configComment)
+    assert.ok(misnamed(comment, NOT_REPORTED, false).some((problem) => problem.includes(`names ${JSON.stringify(kind)}`)), comment)
   }
 })
 
