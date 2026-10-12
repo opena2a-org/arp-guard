@@ -859,30 +859,43 @@ test('the documented interceptor call prints what the Runtime monitoring section
 // filesystem event named its file. The script it is put in gives it `fs`, the
 // CommonJS module object, and `AgentRuntimeProtection`.
 //
-// No wait here is a fixed sleep. A watcher reports changes in the order they
-// were made, however late, and the interceptor reports a call when it is made.
-// So `fence` writes a file of its own and waits for the event that names it:
-// by then every event for an earlier operation has arrived. One fence after
-// start() keeps out what a watcher still reports of the files written before
-// it started, and one after the operations ends the observation. A watcher can
-// miss a file written before it was ready, so `fence` writes a new file every
-// half second until one is reported, and throws after about ten seconds with
-// none. Each operation returns a promise when it does not end within its call,
-// and the second fence is written once all have ended.
+// No wait here is a fixed sleep. The interceptor reports a call when it is
+// made. A watcher reports a change some time after it was made, so `fence`
+// writes a file of its own and waits for the event that names it: a watcher
+// that keeps the order of the changes has by then reported every earlier
+// operation. One fence after start() keeps out what such a watcher still
+// reports of the files written before it started, and one after the operations
+// ends the observation.
+//
+// A watcher does not report every file. It can miss one written before it was
+// ready, and on a loaded machine it can drop the event for one file and report
+// a file written after it. So nothing here rests on one write:
+// `writeUntilReported` writes a new file every half second until an event
+// names one of them, and gives up after about thirty seconds and sixty files.
+// The limit was ten seconds, which a watcher on a loaded machine passed with
+// no event. `fence` is that wait, and throws when it gives up. The operation
+// of a row that says a new file is reported is that wait too: the row names
+// the start the names of its files share, and reads `not reported` when the
+// wait gives up. Each operation is given the events seen so far and returns a
+// promise when it does not end within its call, and the second fence is
+// written once all have ended.
 const OBSERVE = String.raw`
 const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-let fences = 0;
-async function fence(seen) {
-  const files = [];
-  for (let waited = 0; waited < 10000; waited += 25) {
+let files = 0;
+async function writeUntilReported(seen, stem) {
+  const written = [];
+  for (let waited = 0; waited < 30000; waited += 25) {
     if (waited % 500 === 0) {
-      files.push("fence-" + ++fences + ".txt");
-      fs.writeFileSync(files.at(-1), "x");
+      written.push(stem + ++files + ".txt");
+      fs.writeFileSync(written.at(-1), "x");
     }
     await tick(25);
-    if (seen.some((d) => files.some((file) => d.includes(file)))) return;
+    if (seen.some((d) => written.some((file) => d.includes(file)))) return true;
   }
-  throw new Error("no filesystem event named any of " + files.length + " files written over ten seconds");
+  return false;
+}
+async function fence(seen) {
+  if (!(await writeUntilReported(seen, "fence-"))) throw new Error("no filesystem event named any of the sixty files written over thirty seconds");
 }
 async function observe(label, config, cases) {
   const arp = new AgentRuntimeProtection({ agentName: "readme-probe", intelligence: { enabled: false }, ...config });
@@ -891,7 +904,7 @@ async function observe(label, config, cases) {
   await arp.start();
   await fence(seen);
   const from = seen.length;
-  await Promise.all(cases.map(([, , act]) => act()));
+  await Promise.all(cases.map(([, , act]) => act(seen)));
   await fence(seen);
   await arp.stop();
   const named = seen.slice(from);
@@ -927,7 +940,7 @@ const done = (call) => new Promise((resolve) => call(resolve));
     fs.writeFileSync(file, "FAKE");
   }
   await observe("default", {}, [
-    ["write a new file", "written.txt", () => fs.writeFileSync("written.txt", "x")],
+    ["write a new file", "written-", (seen) => writeUntilReported(seen, "written-")],
     ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
   ]);
   await observe("interceptor", ${INTERCEPTOR}, [
@@ -999,7 +1012,7 @@ ${OBSERVE}
 (async () => {
   fs.writeFileSync("read.txt", "FAKE");
   await observe("late watcher", {}, [
-    ["write a new file", "written.txt", () => fs.writeFileSync("written.txt", "x")],
+    ["write a new file", "written-", (seen) => writeUntilReported(seen, "written-")],
     ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
   ]);
 })();
@@ -1014,15 +1027,59 @@ test('the file probe prints the same lines when the watcher reports late', { tim
   ])
 })
 
+// A stand-in for the package whose watcher drops events: of the files written
+// after start() it reports the first, the third and so on, each once it is
+// written, and never the ones between. The first file the probe writes after
+// its first fence is then one the watcher never reports. That is what a loaded
+// machine did to the one file the probe once wrote there: the fence written
+// after it was reported, and the line for a new file read `not reported`.
+const LOSSY_WATCHER = String.raw`
+const fs = require("fs");
+class AgentRuntimeProtection {
+  handlers = [];
+  writes = 0;
+  onEvent(handler) { this.handlers.push(handler); }
+  async start() {
+    this.writeFileSync = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (this.writes++ % 2 === 0) setImmediate(() => { for (const handler of this.handlers) handler({ source: "filesystem", description: "File created/renamed: " + file }); });
+      return this.writeFileSync.call(fs, file, ...rest);
+    };
+  }
+  async stop() { fs.writeFileSync = this.writeFileSync; }
+}
+${OBSERVE}
+(async () => {
+  fs.writeFileSync("read.txt", "FAKE");
+  await observe("lossy watcher", {}, [
+    ["write a new file", "written-", (seen) => writeUntilReported(seen, "written-")],
+    ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
+  ]);
+})();
+`
+
+// The probe writes new files until one is reported, so the line for a new file
+// does not depend on the watcher reporting the first of them.
+test('the file probe prints the same lines when the watcher drops the event for every second file', { timeout: 60_000 }, async () => {
+  assert.deepEqual(await runAsDocumented(`node -e '${LOSSY_WATCHER}'`), [
+    'lossy watcher, write a new file: reported',
+    'lossy watcher, read a file: not reported',
+  ])
+})
+
 // The section once said file access was monitored. A read is file access, and
 // the default monitor reports no read. It then said the interceptor reports a
 // read made through `fs.readFile` or `fs.readFileSync`, which holds only for a
 // call on the CommonJS `fs` module object. When the monitor reports these
 // operations differently, change these lists and the section together.
-test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 90_000 }, async () => {
+//
+// The first probe waits on a watcher three times, for its two fences and its
+// new file, each for up to thirty seconds. So it gets 120 seconds, not the 30
+// a documented command gets by default, and the test 160 seconds, was 90.
+test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 160_000 }, async () => {
   const section = sectionText(readme, '## Runtime monitoring')
 
-  assert.deepEqual(await runAsDocumented(`node -e '${FILE_PROBE}'`), [
+  assert.deepEqual(await runAsDocumented(`node -e '${FILE_PROBE}'`, { timeout: 120_000 }), [
     'default, write a new file: reported',
     'default, read a file: not reported',
     'interceptor, fs.readFileSync of a sensitive path: reported',
