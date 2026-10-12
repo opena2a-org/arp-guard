@@ -21,12 +21,13 @@
 // kind of value the comment in .gitleaks.toml names. REPORTED holds the lines
 // that comment names as close to one of those kinds and still reported. The
 // comment checks read each kind from the sentence of the comment it is named
-// under, and fail when that sentence says the opposite, or when the words in
-// it that say what a rule reports of the kind hold a word in NEGATING, a list
-// of words that can say not, that the checks do not read. A sentence that says
-// not with a word outside that list, such as excluding or other than, does not
-// fail for that word: "<rule> reports every value excluding <value>" is read
-// as saying the value is reported.
+// under, and fail when that sentence is not in CLAIMS, or when CLAIMS states
+// next to it the opposite of what gitleaks does. The checks do not read from
+// its words whether a sentence says not, since no list of words that can say
+// not holds them all. They also fail when a word that is not in a value, `or`
+// or `and` stands between the words of a claim and a value named under it in
+// its sentence, such as the but in "<rule> reports every value, but not
+// <value>".
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -227,20 +228,26 @@ const REPORTED = [
 const configComment = config.split('\n').filter((text) => text.startsWith('#')).map((text) => text.replace(/^#\s?(?:-\s)?/, '')).join(' ').replace(/\s+/g, ' ')
 
 // Words from each sentence in the comment of .gitleaks.toml that says a rule
-// reports, or does not report, a kind of value. A kind is named under the
-// nearest of these before it in the sentence it is in, or else the first one
-// after it in that sentence, or else the last one before that sentence, with
-// the bullets and sentences after that one. So in a sentence that says both,
-// such as "<rule> reports <kind>, so <rule> does not report <other kind>",
-// each kind is named under the words before it. Words after a kind in its
-// sentence that say what a rule reports can say it of that kind too, so they
-// are in one of these as well, or the checks fail: "<rule> does not report
-// <kind>, but <other kind> is reported" fails for both kinds.
+// reports, or does not report, a kind of value, and, stated next to them,
+// what the sentence says of each kind named under them: reported, or not
+// reported. The checks read that from here, not from the words, since a
+// sentence can say not with any of many words, such as not, cannot, excluding,
+// other than, seldom or omitted, and a word such as stopwords, nonce or
+// exceptions can look like one. So when you change a sentence, read it again
+// and state here what it says. A kind is named under the nearest of these
+// before it in the sentence it is in, or else the first one after it in that
+// sentence, or else the last one before that sentence, with the bullets and
+// sentences after that one. So in a sentence that says both, such as "<rule>
+// reports <kind>, so <rule> does not report <other kind>", each kind is named
+// under the words before it. Words after a kind in its sentence that say what
+// a rule reports can say it of that kind too, so they are in one of these as
+// well, or the checks fail: "<rule> does not report <kind>, but <other kind>
+// is reported" fails for both kinds.
 const CLAIMS = [
-  'api-key-generic and database-password do not report a value that allowlist matches',
-  'is not of these kinds, so database-password reports values such as',
-  'It still does not report such a value when another kind above matches it',
-  'which the (?i) matches as k and s, so database-password does not report',
+  { words: 'api-key-generic and database-password do not report a value that allowlist matches', reported: false },
+  { words: 'is not of these kinds, so database-password reports values such as', reported: true },
+  { words: 'It still does not report such a value when another kind above matches it, such as', reported: false },
+  { words: 'which the (?i) matches as k and s, so database-password does not report', reported: false },
 ]
 
 // Every kind of value the comment checks read. A kind named inside a longer
@@ -249,54 +256,40 @@ const KINDS = [...NOT_REPORTED, ...REPORTED].map(({ kind }) => kind)
 
 // The words in the comment that say a rule reports, or does not report, a value:
 // each word that holds `report`, in any form and any case, such as reports,
-// report, reported or Reported, with the `not`, `never` or word that ends in
-// `n't` before it. So a kind named in or after a sentence such as "<kind> is
-// reported by database-password" is named under a sentence that is not in
-// CLAIMS.
-const VERB = /\b(?:(?:not|never|\w+n't) )?\w*report\w*/gi
+// report, reported, Reported or unreported. So a kind named in or after a
+// sentence such as "<kind> is reported by database-password" is named under a
+// sentence that is not in CLAIMS.
+const VERB = /\w*report\w*/gi
 
-// Whether words VERB matched say a value is not reported: they start with
-// `not`, `never` or a word that ends in `n't`, as in `does not report`, `is not
-// reported`, `never reports` and `doesn't report`, or the verb starts with
-// `un`, as in `unreported`. These are the only ways of saying not the checks
-// read.
-const NEGATED = /^(?:not|never|\w+n't) |^un(?=report)/i
+// The words, other than values, that can stand between the words of a claim
+// and a value named under it in its sentence: those that join the values of a
+// list, as in "<rule> does not report <kind>, <kind> or <kind>". A comma can
+// stand there too. Any other word there can change what the claim says of the
+// value, as not does in "<rule> reports every value, but not <kind>", so it
+// fails the checks; put it in the words of a claim, and state what that claim
+// says. The checks read no other word that is not in a claim: not one on the
+// far side of a value from its claim, as in "Only <kind> is reported by
+// <rule>", and not one in a sentence after the claim, such as a bullet, whose
+// values are named under the claim before it.
+const LISTED = ['or', 'and']
 
-// A word that can say a value is not reported: not, no, nor, never, neither,
-// nobody, nothing, nowhere, cannot, unable, without, a word that ends in n't or
-// n’t, a form of except, fail, lack, refuse, stop or cease, a word that starts
-// with non, as in none or non-reported, or a form of report that starts with
-// un. A claim that holds one of these in the words that say what it reports of
-// a value, other than the words NEGATED read, fails the checks, since they do
-// not read it: `cannot report`, `is no longer reported`, `is not yet
-// reported`, `fails to report`, `Neither rule reports` and `is not unreported`
-// each fail. The list does not hold every word that can say not, and a claim
-// that says not with a word outside it, such as `excluding` or `other than`,
-// does not fail for that word: "<rule> reports every value excluding <value>"
-// is read as saying the value is reported, and "<rule> does not report values
-// other than <value>" as saying it is not.
-const NEGATING = /\b(?:not|no|nor|never|neither|nobody|nothing|nowhere|cannot|unable|without|\w+n['’]t|except\w*|fail\w*|lack\w*|refus\w*|stop\w*|ceas\w*|non\w*|un\w*report\w*)\b/i
-
-// The stops of a sentence, and the stops of a clause.
-const SENTENCE = '.!?'
-const CLAUSE = '.!?,;:'
+// The stops of a sentence: a `.`, `!` or `?` that a space or the end of the
+// text follows.
+const STOP = /[.!?](?=\s|$)/g
 
 // The index in text where the sentence that holds the index from ends: the
-// first `.`, `!` or `?` from there on that a space or the end of the text
-// follows. With CLAUSE as stops, where the clause ends, at a `,`, `;` or `:`
-// as well.
-function sentenceEnd(text, from, stops = SENTENCE) {
-  const stop = new RegExp(`[${stops}](?=\\s|$)`, 'g')
+// first stop from there on.
+function sentenceEnd(text, from) {
+  const stop = new RegExp(STOP)
   stop.lastIndex = from
   return stop.exec(text)?.index ?? text.length
 }
 
 // The index in text where the sentence that holds the index at starts: just
-// after the last `.`, `!` or `?` before it that a space follows, or 0. With
-// CLAUSE as stops, where the clause starts.
-function sentenceStart(text, at, stops = SENTENCE) {
+// after the last stop before it, or 0.
+function sentenceStart(text, at) {
   let start = 0
-  for (const stop of text.matchAll(new RegExp(`[${stops}](?=\\s|$)`, 'g'))) {
+  for (const stop of text.matchAll(STOP)) {
     if (stop.index >= at) break
     start = stop.index + 1
   }
@@ -316,34 +309,37 @@ function placesOf(text, kind) {
   return indexesOf(text, kind).filter((place) => !longer.some((other) => indexesOf(text, other).some((start) => start <= place && place + kind.length <= start + other.length)))
 }
 
-// The first word in comment that can say not, by NEGATING, in the words that
-// say what verb says of a kind named from place to place + length, other than
-// the words NEGATED read in verb. Those words are the clause of verb, and when
-// the kind is in the sentence of verb, every clause from the kind to verb, as
-// in "Neither <kind> nor <other kind> is reported by <rule>" or "<rule>
-// reports <kind>, but not <other kind>".
-function unreadNegation(comment, verb, place, length) {
-  const verbEnd = verb.index + verb[0].length
-  const inSentence = sentenceStart(comment, place) <= verb.index && verb.index < sentenceEnd(comment, place + length)
-  const first = inSentence ? Math.min(place, verb.index) : verb.index
-  const last = inSentence ? Math.max(place + length, verbEnd) : verbEnd
-  const read = NEGATED.exec(verb[0])?.[0] ?? ''
-  const words = `${comment.slice(sentenceStart(comment, first, CLAUSE), verb.index)} ${comment.slice(verb.index + read.length, sentenceEnd(comment, last, CLAUSE))}`
-  return NEGATING.exec(words)?.[0]
+// The first word in comment between the words of a claim, from wordsStart to
+// wordsStart + words.length, and a kind named from place to place + length,
+// other than a word in a kind, a word in LISTED and a comma, or nothing when
+// the kind is in the words of the claim. For "<rule> reports every value, but
+// not <kind>" that is but.
+function unlisted(comment, words, wordsStart, place, length) {
+  const wordsEnd = wordsStart + words.length
+  const between = wordsEnd <= place ? comment.slice(wordsEnd, place) : place + length <= wordsStart ? comment.slice(place + length, wordsStart) : ''
+  const longestFirst = [...KINDS].sort((a, b) => b.length - a.length)
+  return longestFirst.reduce((text, kind) => text.replaceAll(kind, ' '), between).split(/[\s,]+/).find((word) => word && !LISTED.includes(word))
 }
 
 // What is wrong with how the comment names the kinds of the entries, which
 // gitleaks reports when reported is true and does not report otherwise: a kind
 // the comment does not name, or names under a sentence that is not in claims,
-// that holds a word in NEGATING that unreadNegation finds, or that
-// says the opposite, or names before words in its sentence that say what a
-// rule reports and are not in claims. A sentence in claims says a value is not
-// reported when the words that say so are NEGATED, and says it is reported
-// otherwise.
+// or that claims states says the opposite, or names in the sentence of a claim
+// with a word unlisted finds between the two, or names before words in its
+// sentence that say what a rule reports and are not in claims.
 function misnamed(comment, entries, reported, claims = CLAIMS) {
+  for (const claim of claims) {
+    assert.ok(typeof claim.words === 'string' && typeof claim.reported === 'boolean', `a claim states its words and, as reported, whether they say a value is reported: ${JSON.stringify(claim)}`)
+  }
   const verbs = [...comment.matchAll(VERB)]
   const says = reported ? 'reports' : 'does not report'
-  const claimOf = (verb) => claims.find((words) => indexesOf(comment, words).some((claimStart) => claimStart <= verb.index && verb.index < claimStart + words.length))
+  // The claim whose words hold verb, and where those words start.
+  const claimOf = (verb) => {
+    for (const claim of claims) {
+      const start = indexesOf(comment, claim.words).find((at) => at <= verb.index && verb.index < at + claim.words.length)
+      if (start !== undefined) return { ...claim, start }
+    }
+  }
   const around = (verb) => JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length))
   const problems = []
   for (const { id, kind } of entries) {
@@ -357,13 +353,13 @@ function misnamed(comment, entries, reported, claims = CLAIMS) {
       const after = verbs.filter((match) => place + kind.length <= match.index && match.index < end)
       const verb = before && start <= before.index ? before : after[0] ?? before
       const claim = verb && claimOf(verb)
-      const unread = claim && unreadNegation(comment, verb, place, kind.length)
+      const unread = claim && start <= verb.index && unlisted(comment, claim.words, claim.start, place, kind.length)
       if (!claim) {
         problems.push(`${names} ${verb ? around(verb) : 'no sentence that says what a rule reports'}, which is not a sentence in the claims`)
       } else if (unread) {
-        problems.push(`${names} ${JSON.stringify(claim)}, which holds ${JSON.stringify(unread)}, a word that can say not where the checks do not read it`)
-      } else if (NEGATED.test(verb[0]) === reported) {
-        problems.push(`${names} ${JSON.stringify(claim)}`)
+        problems.push(`${names} ${JSON.stringify(claim.words)}, with ${JSON.stringify(unread)} between them, a word the checks do not read there`)
+      } else if (claim.reported !== reported) {
+        problems.push(`${names} ${JSON.stringify(claim.words)}`)
       }
       for (const later of after) {
         if (later !== verb && !claimOf(later)) problems.push(`${names} ${around(later)}, which is not a sentence in the claims`)
@@ -482,15 +478,22 @@ test('the comment checks read a sentence on past a `.` that a space does not fol
   }
 })
 
-test('the comment checks read a sentence in the claims as saying a value is not reported when not, never or a word ending in n\'t comes just before the verb or the verb starts with un, and as saying it is reported when it holds no other word that can say not', () => {
+test('the comment checks read a sentence in the claims as saying what is stated next to it, whatever words it says that with, for a value in NOT_REPORTED and for one in REPORTED', () => {
   const notReported = '/tmp/pa<U+017F><U+017F>word'
   const reported = '$P<U+00C4>SSWORD_X'
+  // Each sentence with what it says of the value, true when it says the value
+  // is reported. Some say not with a word that a list of such words once did
+  // not hold, such as excluding, other than or seldom, and some hold a word
+  // that such a list read as not, such as stopwords, nonce or exceptions.
   const sentences = [
     [true, (kind) => `${kind} is reported by database-password.`],
     [true, (kind) => `Both rules report ${kind}.`],
     [true, (kind) => `database-password reported ${kind} in a test run.`],
     [true, (kind) => `Reported by database-password: ${kind}.`],
     [true, (kind) => `database-password reports ${kind}.`],
+    [true, (kind) => `${kind} is not unreported by database-password.`],
+    [true, (kind) => `database-password reports ${kind}, which holds none of the stopwords.`],
+    [true, (kind) => `With no exceptions, database-password reports ${kind}.`],
     [false, (kind) => `database-password does not report ${kind}.`],
     [false, (kind) => `Both rules do not report ${kind}.`],
     [false, (kind) => `${kind} is not reported by database-password.`],
@@ -498,50 +501,87 @@ test('the comment checks read a sentence in the claims as saying a value is not 
     [false, (kind) => `database-password never reports ${kind}.`],
     [false, (kind) => `${kind} is Never reported by database-password.`],
     [false, (kind) => `database-password doesn't report ${kind}.`],
+    [false, (kind) => `database-password doesn’t report ${kind}.`],
+    [false, (kind) => `${kind} is no longer reported by database-password.`],
+    [false, (kind) => `database-password cannot report ${kind}.`],
+    [false, (kind) => `${kind} is not yet reported by database-password.`],
+    [false, (kind) => `${kind} is never actually reported by database-password.`],
+    [false, (kind) => `database-password fails to report ${kind}.`],
+    [false, (kind) => `Neither rule reports ${kind}.`],
+    [false, (kind) => `${kind} is non-reported by database-password.`],
+    [false, (kind) => `Both rules report one of these, but not ${kind}.`],
+    [false, (kind) => `database-password reports every value excluding ${kind}.`],
+    [false, (kind) => `database-password reports values other than ${kind}.`],
+    [false, (kind) => `database-password reports every value but ${kind}.`],
+    [false, (kind) => `${kind} is omitted from what database-password reports.`],
+    [false, (kind) => `database-password ignores ${kind} and reports the rest.`],
+    [false, (kind) => `database-password seldom reports ${kind}.`],
+    [false, (kind) => `${kind} is hardly ever reported by database-password.`],
+    [false, (kind) => `${kind} is rarely reported by database-password.`],
+    [false, (kind) => `database-password does not report ${kind} or the stopwords.`],
+    [false, (kind) => `database-password does not report ${kind} in a nonce.`],
+    [false, (kind) => `${kind} is one of the exceptions database-password does not report.`],
+    [false, (kind) => `database-password does not report ${kind} through its non-capturing groups.`],
   ]
   const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${notReported}.`
   for (const [says, sentence] of sentences) {
     const moved = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${sentence(notReported)}`)
     assert.notEqual(moved, configComment)
-    const movedProblems = misnamed(moved, NOT_REPORTED, false, [...CLAIMS, sentence(notReported)])
-    const notProblem = `the comment in .gitleaks.toml names ${JSON.stringify(notReported)}, a value database-password does not report, under ${JSON.stringify(sentence(notReported))}`
-    assert.deepEqual(movedProblems, says ? [notProblem] : [], moved)
     const added = configComment.replace(last, () => `${last} ${sentence(reported)}`)
     assert.notEqual(added, configComment)
     assert.notDeepEqual(misnamed(added, REPORTED, true), [], added)
-    const addedProblems = misnamed(added, REPORTED, true, [...CLAIMS, sentence(reported)])
-    const problem = `the comment in .gitleaks.toml names ${JSON.stringify(reported)}, a value database-password reports, under ${JSON.stringify(sentence(reported))}`
-    assert.deepEqual(addedProblems, says ? [] : [problem], added)
+    // Stated as it reads, and then stated the other way: the statement, not the
+    // words, decides.
+    for (const stated of [says, !says]) {
+      const movedProblems = misnamed(moved, NOT_REPORTED, false, [...CLAIMS, { words: sentence(notReported), reported: stated }])
+      const notProblem = `the comment in .gitleaks.toml names ${JSON.stringify(notReported)}, a value database-password does not report, under ${JSON.stringify(sentence(notReported))}`
+      assert.deepEqual(movedProblems, stated ? [notProblem] : [], moved)
+      const addedProblems = misnamed(added, REPORTED, true, [...CLAIMS, { words: sentence(reported), reported: stated }])
+      const problem = `the comment in .gitleaks.toml names ${JSON.stringify(reported)}, a value database-password reports, under ${JSON.stringify(sentence(reported))}`
+      assert.deepEqual(addedProblems, stated ? [] : [problem], added)
+    }
   }
 })
 
-test('the comment checks fail on each of ten sentences in the claims that say not with a word in NEGATING where they do not read it, for a value in NOT_REPORTED and for one in REPORTED', () => {
-  const notReported = '/tmp/pa<U+017F><U+017F>word'
-  const reported = '$P<U+00C4>SSWORD_X'
-  // Each sentence with the word the problem names.
-  const sentences = [
-    [(kind) => `${kind} is no longer reported by database-password.`, 'no'],
-    [(kind) => `database-password cannot report ${kind}.`, 'cannot'],
-    [(kind) => `${kind} is not yet reported by database-password.`, 'not'],
-    [(kind) => `${kind} is never actually reported by database-password.`, 'never'],
-    [(kind) => `database-password fails to report ${kind}.`, 'fails'],
-    [(kind) => `Neither rule reports ${kind}.`, 'Neither'],
-    [(kind) => `${kind} is non-reported by database-password.`, 'non'],
-    [(kind) => `${kind} is not unreported by database-password.`, 'unreported'],
-    [(kind) => `database-password doesn’t report ${kind}.`, 'doesn’t'],
-    [(kind) => `Both rules report one of these, but not ${kind}.`, 'not'],
+test('the comment checks fail when a word other than `or` and `and` stands between the words of a claim and a value named under it in its sentence, outside every value', () => {
+  // The words of a claim, and the last two values of the list after it, which
+  // the comment joins with or.
+  const lists = [
+    [NOT_REPORTED, false, 'which the (?i) matches as k and s, so database-password does not report', '${{secrets.pa<U+017F><U+017F>word}}', '/tmp/pa<U+017F><U+017F>word'],
+    [REPORTED, true, 'is not of these kinds, so database-password reports values such as', '/Users/<U+00E4>pp/dbpassword', '/Users/app<U+0663>/dbpassword'],
   ]
-  const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${notReported}.`
-  for (const [sentence, word] of sentences) {
-    const cases = [
-      [NOT_REPORTED, false, notReported, configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${sentence(notReported)}`)],
-      [REPORTED, true, reported, configComment.replace(last, () => `${last} ${sentence(reported)}`)],
-    ]
-    for (const [entries, reported, kind, comment] of cases) {
-      assert.notEqual(comment, configComment)
-      const problem = `the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value database-password ${reported ? 'reports' : 'does not report'}, under ${JSON.stringify(sentence(kind))}, which holds ${JSON.stringify(word)}, a word that can say not where the checks do not read it`
-      assert.deepEqual(misnamed(comment, entries, reported, [...CLAIMS, sentence(kind)]), [problem], comment)
+  for (const [entries, reported, words, previous, kind] of lists) {
+    const from = `${previous} or ${kind}`
+    assert.ok(configComment.includes(from))
+    for (const joiner of [', ', ' or ', ' and ', ', or ', ', and ']) {
+      const comment = configComment.replace(from, () => `${previous}${joiner}${kind}`)
+      assert.deepEqual(misnamed(comment, entries, reported), [], comment)
     }
+    // Each joiner with the word the problem names.
+    const joiners = [[', but ', 'but'], [', but not ', 'but'], [' excluding ', 'excluding'], [' other than ', 'other'], [', except ', 'except'], [' and not ', 'not'], [' or never ', 'never'], [' nor ', 'nor']]
+    for (const [joiner, word] of joiners) {
+      const comment = configComment.replace(from, () => `${previous}${joiner}${kind}`)
+      const problem = `the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value database-password ${reported ? 'reports' : 'does not report'}, under ${JSON.stringify(words)}, with ${JSON.stringify(word)} between them, a word the checks do not read there`
+      assert.deepEqual(misnamed(comment, entries, reported), [problem], comment)
+    }
+  }
+})
+
+test('the comment checks read the words between a value and the words of a claim after it in its sentence', () => {
+  const kind = '/tmp/pa<U+017F><U+017F>word'
+  const other = '{{<U+212A>eyname}}'
+  const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}.`
+  const claim = { words: 'are not reported by database-password', reported: false }
+  const listed = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${kind} and ${other} are not reported by database-password.`)
+  assert.deepEqual(misnamed(listed, NOT_REPORTED, false, [...CLAIMS, claim]), [], listed)
+  const unlistedWord = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${kind}, unlike ${other}, are not reported by database-password.`)
+  const problem = `the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value database-password does not report, under ${JSON.stringify(claim.words)}, with "unlike" between them, a word the checks do not read there`
+  assert.deepEqual(misnamed(unlistedWord, NOT_REPORTED, false, [...CLAIMS, claim]), [problem], unlistedWord)
+})
+
+test('the comment checks refuse a claim that does not state, as reported, what it says of a value', () => {
+  for (const claim of ['database-password reports', { words: 'database-password reports' }, { words: 'database-password reports', reported: 'yes' }]) {
+    assert.throws(() => misnamed(configComment, REPORTED, true, [...CLAIMS, claim]), /^AssertionError.*a claim states its words/, JSON.stringify(claim))
   }
 })
 
@@ -565,7 +605,7 @@ test('the comment checks fail when a sentence that is not in CLAIMS names a valu
 })
 
 test('the comment checks name the claims they are called with, not CLAIMS, when a sentence is not in them', () => {
-  const problems = misnamed(configComment, REPORTED, true, CLAIMS.filter((words) => !words.includes('reports values such as')))
+  const problems = misnamed(configComment, REPORTED, true, CLAIMS.filter(({ words }) => !words.includes('reports values such as')))
   assert.equal(problems.length, REPORTED.length, problems.join('\n'))
   for (const problem of problems) assert.ok(problem.endsWith('which is not a sentence in the claims') && !problem.includes('CLAIMS'), problem)
 })
