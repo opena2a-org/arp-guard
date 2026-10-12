@@ -245,7 +245,10 @@ const configComment = config.split('\n').filter((text) => text.startsWith('#')).
 // well, or the checks fail: "<rule> does not report <kind>, but <other kind>
 // is reported" fails for both kinds. The words of a claim start where its
 // sentence starts, since a word before them, such as Never or Nobody, can say
-// the opposite of what they say.
+// the opposite of what they say. So the words of the second claim in a sentence
+// hold those of the first, and when the words of several claims hold the word
+// that says what a rule reports, the checks read the claim whose words end
+// nearest after it, whatever the order here.
 const CLAIMS = [
   { words: 'So api-key-generic and database-password do not report a value that allowlist matches', reported: false },
   { words: 'A value with any other letter or digit in those places is not of these kinds, so database-password reports values such as', reported: true },
@@ -279,8 +282,9 @@ const VERB = /\w*report\w*/gi
 const LISTED = ['or', 'and']
 
 // The stops of a sentence: a `.`, `!` or `?` that a space or the end of the
-// text follows.
-const STOP = /[.!?](?=\s|$)/g
+// text follows, other than the `.` that ends e.g. or i.e., in any case, which a
+// sentence goes on past.
+const STOP = /(?<!\b(?:e\.g|i\.e))[.!?](?=\s|$)/gi
 
 // The index in text where the sentence that holds the index from ends: the
 // first stop from there on.
@@ -347,19 +351,19 @@ function unlisted(comment, words, wordsStart, place, length, sameSentence) {
 function misnamed(comment, entries, reported, claims = CLAIMS) {
   for (const claim of claims) {
     assert.ok(typeof claim.words === 'string' && claim.words !== '' && typeof claim.reported === 'boolean', `a claim states its words and, as reported, whether they say a value is reported: ${JSON.stringify(claim)}`)
+    assert.ok(!claims.some((other) => other.words === claim.words && other.reported !== claim.reported), `two claims state the same words, as reported and as not reported: ${JSON.stringify(claim.words)}`)
   }
   for (const entry of entries) {
     assert.ok(typeof entry.id === 'string' && typeof entry.kind === 'string' && entry.kind !== '', `an entry states its rule and the words that name its kind: ${JSON.stringify(entry)}`)
   }
   const verbs = [...comment.matchAll(VERB)]
   const says = reported ? 'reports' : 'does not report'
-  // The claim whose words hold verb, and where those words start.
-  const claimOf = (verb) => {
-    for (const claim of claims) {
-      const start = indexesOf(comment, claim.words).find((at) => at <= verb.index && verb.index < at + claim.words.length)
-      if (start !== undefined) return { ...claim, start }
-    }
-  }
+  // The claim whose words hold verb, and where those words start. When the
+  // words of several claims hold it, those that end nearest after it, and of
+  // those the ones that start first, so the order of claims does not decide.
+  const claimOf = (verb) => claims
+    .flatMap((claim) => indexesOf(comment, claim.words).filter((at) => at <= verb.index && verb.index < at + claim.words.length).map((start) => ({ ...claim, start })))
+    .sort((a, b) => a.start + a.words.length - (b.start + b.words.length) || a.start - b.start)[0]
   const around = (verb) => JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length))
   const problems = []
   for (const { id, kind } of entries) {
@@ -623,15 +627,39 @@ test('the comment checks fail when a word stands before the words of a claim in 
   assert.notDeepEqual(misnamed(rewritten, NOT_REPORTED, false), [], rewritten)
 })
 
-test('the comment checks refuse a claim that does not state, as reported, what it says of a value', () => {
+test('the comment checks refuse a claim that does not state, as reported, what it says of a value, or states the opposite of a claim with the same words', () => {
   for (const claim of ['database-password reports', { words: 'database-password reports' }, { words: 'database-password reports', reported: 'yes' }, { words: '', reported: true }]) {
     assert.throws(() => misnamed(configComment, REPORTED, true, [...CLAIMS, claim]), /^AssertionError.*a claim states its words/, JSON.stringify(claim))
   }
+  const twin = { words: CLAIMS[0].words, reported: !CLAIMS[0].reported }
+  assert.throws(() => misnamed(configComment, REPORTED, true, [...CLAIMS, twin]), /^AssertionError.*two claims state the same words/)
 })
 
 test('the comment checks refuse an entry with no kind and an empty string to find, and return', () => {
   assert.throws(() => misnamed(configComment, [{ id: 'database-password', kind: '' }, ...REPORTED], true), /^AssertionError.*an entry states its rule and the words that name its kind/)
   assert.throws(() => indexesOf(configComment, ''), /^AssertionError.*an empty string/)
+})
+
+test('the comment checks read a value under the claim whose words end nearest after the verb when the words of several claims hold it, whatever the order of the claims', () => {
+  // A sentence with two claims, whose second claim holds the words of the first.
+  const comment = `${configComment} database-password reports {{<U+212A>eyname}}, so database-password does not report {{p<U+00E4>ssword}}.`
+  const first = { words: 'database-password reports', reported: true }
+  const both = { words: 'database-password reports {{<U+212A>eyname}}, so database-password does not report', reported: false }
+  const problem = `the comment in .gitleaks.toml names "{{<U+212A>eyname}}", a value database-password does not report, under ${JSON.stringify(first.words)}`
+  const orders = [[...CLAIMS, first, both], [...CLAIMS, both, first]]
+  for (const claims of orders) assert.deepEqual(misnamed(comment, NOT_REPORTED, false, claims), [problem], comment)
+  assert.deepEqual(misnamed(comment, REPORTED, true, orders[0]), misnamed(comment, REPORTED, true, orders[1]), comment)
+})
+
+test('the comment checks read a sentence on past the `.` that ends e.g. or i.e., so a word before it stands before a claim', () => {
+  const words = CLAIMS.find((claim) => claim.words.startsWith('So api-key-generic and database-password')).words
+  for (const abbreviation of ['e.g.', 'i.e.', 'E.g.']) {
+    const comment = configComment.replace(words, () => `It is false, ${abbreviation} ${words}`)
+    assert.notEqual(comment, configComment)
+    const problems = misnamed(comment, NOT_REPORTED, false)
+    assert.ok(problems.length > 0, comment)
+    for (const problem of problems) assert.ok(problem.endsWith(`under ${JSON.stringify(words)}, with "It" before them in their sentence, a word the checks do not read there`), problem)
+  }
 })
 
 test('the comment checks fail when the comment does not name a value in NOT_REPORTED or REPORTED', () => {

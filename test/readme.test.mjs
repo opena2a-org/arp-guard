@@ -225,10 +225,11 @@ test('a long fence run that ends in a carriage return is read in linear time', (
 
 // A step of the system clock moves Date.now() and not performance.now(), so a
 // step forward while a test times a run would fail a limit such as
-// `elapsed < 1_000`.
-test('the tests that time a run measure it with performance.now()', () => {
+// `elapsed < 1_000`, and one while a helper waits would end the wait before its
+// `deadline`.
+test('the tests that time a run, and the helpers that wait until a deadline, measure it with performance.now()', () => {
   const lines = readFileSync(new URL(import.meta.url), 'utf8').split('\n')
-  const timing = lines.flatMap((text, index) => (/\b(?:started|elapsed) = (?:Date|performance)\.now\(\)/.test(text) ? [`line ${index + 1}: ${text.trim()}`] : []))
+  const timing = lines.flatMap((text, index) => (/\b(?:started|elapsed|deadline) = (?:Date|performance)\.now\(\)/.test(text) ? [`line ${index + 1}: ${text.trim()}`] : []))
   assert.ok(timing.length > 0, 'no test here times a run')
   assert.deepEqual(timing.filter((line) => !line.includes('performance.now()')), [])
 })
@@ -278,7 +279,7 @@ test('documented commands that exit 0 and print to stderr fail with a stderr mes
 // Resolves to true once no process `pid` exists, or false if it still runs
 // after `within` ms.
 async function exits(pid, within) {
-  const deadline = Date.now() + within
+  const deadline = performance.now() + within
   for (;;) {
     try {
       process.kill(pid, 0)
@@ -286,7 +287,7 @@ async function exits(pid, within) {
       if (error.code === 'ESRCH') return true
       throw error
     }
-    if (Date.now() >= deadline) return false
+    if (performance.now() >= deadline) return false
     await sleep(50)
   }
 }
@@ -294,10 +295,10 @@ async function exits(pid, within) {
 // Resolves to the process id `file` records once it records one, or 0 if it
 // records none within `within` ms.
 async function recordedPid(file, within) {
-  const deadline = Date.now() + within
+  const deadline = performance.now() + within
   for (;;) {
     const pid = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0
-    if (pid > 0 || Date.now() >= deadline) return pid
+    if (pid > 0 || performance.now() >= deadline) return pid
     await sleep(50)
   }
 }
@@ -628,11 +629,11 @@ async function stopRunner(runner, within = 5_000) {
 async function documentedPid(runner, pidFile, within) {
   let status = null
   runner.ended.then((received) => (status = received))
-  const deadline = Date.now() + within
+  const deadline = performance.now() + within
   for (;;) {
     const pid = await recordedPid(pidFile, 0)
     if (pid > 0) return pid
-    if (status !== null || Date.now() >= deadline) break
+    if (status !== null || performance.now() >= deadline) break
     await sleep(50)
   }
   const reason = status === null ? `within ${within} ms` : `before the runner exited ${status}`
@@ -800,7 +801,8 @@ test('the runner gets PATH and its temp dir, and no other variable of the test p
     const name = 'AGENT_RUNTIME_PROTECTION_README_TEST_PROBE'
     const namesFile = join(scratch, 'names')
     // The variables a node process started with no environment has anyway,
-    // such as the __CF_USER_TEXT_ENCODING macOS sets in each process.
+    // such as the __CF_USER_TEXT_ENCODING macOS sets in a process that loads
+    // CoreFoundation, as node does.
     const own = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env)))'], { env: {}, encoding: 'utf8' })
     assert.equal(own.status, 0, own.stderr)
     const added = JSON.parse(own.stdout)
