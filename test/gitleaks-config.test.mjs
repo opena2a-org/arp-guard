@@ -244,12 +244,17 @@ const KINDS = [...NOT_REPORTED, ...REPORTED].map(({ kind }) => kind)
 
 // The words in the comment that say a rule reports, or does not report, a value:
 // each word that holds `report`, in any form and any case, such as reports,
-// report, reported or Reported, with the `do not` or `does not` before it. So a
-// kind named in or after a sentence such as "<kind> is reported by
-// database-password" is named under a sentence that is not in CLAIMS. Only
-// `do not` and `does not` are read as saying not: `is not reported`,
-// `unreported` and `never reports` are read as saying a value is reported.
-const VERB = /\b(?:do(?:es)? not )?\w*report\w*/gi
+// report, reported or Reported, with the `not`, `never` or word that ends in
+// `n't` before it. So a kind named in or after a sentence such as "<kind> is
+// reported by database-password" is named under a sentence that is not in
+// CLAIMS.
+const VERB = /\b(?:(?:not|never|\w+n't) )?\w*report\w*/gi
+
+// Whether words VERB matched say a value is not reported: they start with
+// `not`, `never` or a word that ends in `n't`, as in `does not report`, `is not
+// reported`, `never reports` and `doesn't report`, or the verb starts with
+// `un`, as in `unreported`.
+const NEGATED = /^(?:not|never|\w+n't) |^un(?=report)/i
 
 // The index in text where the sentence that holds the index from ends: the
 // first `.`, `!` or `?` from there on that a space or the end of the text
@@ -289,8 +294,8 @@ function placesOf(text, kind) {
 // the comment does not name, or names under a sentence that is not in claims or
 // that says the opposite, or names before words in its sentence that say what a
 // rule reports and are not in claims. A sentence in claims says a value is not
-// reported when the words that say so are `do not` or `does not` and a form of
-// report, and says it is reported otherwise.
+// reported when the words that say so are NEGATED, and says it is reported
+// otherwise.
 function misnamed(comment, entries, reported, claims = CLAIMS) {
   const verbs = [...comment.matchAll(VERB)]
   const says = reported ? 'reports' : 'does not report'
@@ -310,7 +315,7 @@ function misnamed(comment, entries, reported, claims = CLAIMS) {
       const claim = verb && claimOf(verb)
       if (!claim) {
         problems.push(`${names} ${verb ? around(verb) : 'no sentence that says what a rule reports'}, which is not a sentence in the claims`)
-      } else if (/\bnot\b/i.test(verb[0]) === reported) {
+      } else if (NEGATED.test(verb[0]) === reported) {
         problems.push(`${names} ${JSON.stringify(claim)}`)
       }
       for (const later of after) {
@@ -387,16 +392,37 @@ test('the comment checks pass when a sentence that names the values in REPORTED 
 test('the comment checks fail when words after a value in its sentence say what a rule reports and are not in CLAIMS, even after a claim and with the verb that agrees', () => {
   const kind = '/tmp/pa<U+017F><U+017F>word'
   const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}.`
+  // Each case ends with the words the problem quotes, which end with the words
+  // after the value that say what a rule reports.
   const cases = [
-    [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}}, but ${kind} is reported.`],
-    [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}, which it does not report either.`],
-    [REPORTED, true, REPORTED.map((entry) => entry.kind), 'the Arabic-Indic digit three.', 'the Arabic-Indic digit three, though in fact it does not report them.'],
+    [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}}, but ${kind} is reported.`, `, but ${kind} is reported`],
+    [NOT_REPORTED, false, [kind], last, `\${{secrets.pa<U+017F><U+017F>word}} or ${kind}, which it does not report either.`, ` or ${kind}, which it does not report`],
+    [REPORTED, true, REPORTED.map((entry) => entry.kind), 'the Arabic-Indic digit three.', 'the Arabic-Indic digit three, though in fact it does not report them.', 'digit three, though in fact it does not report'],
   ]
-  for (const [entries, reported, kinds, from, to] of cases) {
+  for (const [entries, reported, kinds, from, to, quoted] of cases) {
     const comment = configComment.replace(from, () => to)
     assert.notEqual(comment, configComment)
     const problems = misnamed(comment, entries, reported)
-    for (const named of kinds) assert.ok(problems.some((problem) => problem.includes(`names ${JSON.stringify(named)}`) && problem.endsWith('which is not a sentence in the claims')), comment)
+    for (const named of kinds) assert.ok(problems.some((problem) => problem.includes(`names ${JSON.stringify(named)}`) && problem.endsWith(`${quoted}", which is not a sentence in the claims`)), `${comment}\n${problems.join('\n')}`)
+  }
+})
+
+test('the comment checks read the words after a value that say what a rule reports only up to the end of its sentence', () => {
+  const comment = `${configComment} The secret scan reports a finding under the id of its rule.`
+  assert.deepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
+  assert.deepEqual(misnamed(comment, REPORTED, true), [], comment)
+})
+
+test('the comment checks name a value once when the only words in its sentence that say what a rule reports come after it and are not in CLAIMS', () => {
+  const cases = [
+    [NOT_REPORTED, false, '{{<U+212A>eyname}}', '{{<U+212A>eyname}} is one more value database-password does not report.'],
+    [REPORTED, true, '{{p<U+00E4>ssword}}', '{{p<U+00E4>ssword}} is one more value database-password reports.'],
+  ]
+  for (const [entries, reported, kind, sentence] of cases) {
+    const comment = `${configComment} ${sentence}`
+    const problems = misnamed(comment, entries, reported)
+    assert.equal(problems.length, 1, `${comment}\n${problems.join('\n')}`)
+    assert.ok(problems[0].includes(`names ${JSON.stringify(kind)}`) && problems[0].endsWith('which is not a sentence in the claims'), problems[0])
   }
 })
 
@@ -409,29 +435,36 @@ test('the comment checks read a sentence on past a `.` that a space does not fol
   }
 })
 
-test('the comment checks read a sentence in the claims with any form of the verb as saying a value is reported unless the words that say so are do not or does not', () => {
+test('the comment checks read a sentence in the claims as saying a value is not reported when not, never or a word ending in n\'t comes before the verb or the verb starts with un, and as saying it is reported otherwise', () => {
   const notReported = '/tmp/pa<U+017F><U+017F>word'
   const reported = '$P<U+00C4>SSWORD_X'
   const sentences = [
-    (kind) => `${kind} is reported by database-password.`,
-    (kind) => `Both rules report ${kind}.`,
-    (kind) => `database-password reported ${kind} in a test run.`,
-    (kind) => `Reported by database-password: ${kind}.`,
-    (kind) => `database-password reports ${kind}.`,
-    (kind) => `${kind} is not reported by database-password.`,
-    (kind) => `${kind} is unreported by database-password.`,
-    (kind) => `database-password never reports ${kind}.`,
+    [true, (kind) => `${kind} is reported by database-password.`],
+    [true, (kind) => `Both rules report ${kind}.`],
+    [true, (kind) => `database-password reported ${kind} in a test run.`],
+    [true, (kind) => `Reported by database-password: ${kind}.`],
+    [true, (kind) => `database-password reports ${kind}.`],
+    [false, (kind) => `database-password does not report ${kind}.`],
+    [false, (kind) => `Both rules do not report ${kind}.`],
+    [false, (kind) => `${kind} is not reported by database-password.`],
+    [false, (kind) => `${kind} is unreported by database-password.`],
+    [false, (kind) => `database-password never reports ${kind}.`],
+    [false, (kind) => `${kind} is Never reported by database-password.`],
+    [false, (kind) => `database-password doesn't report ${kind}.`],
   ]
   const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${notReported}.`
-  for (const sentence of sentences) {
+  for (const [says, sentence] of sentences) {
     const moved = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${sentence(notReported)}`)
     assert.notEqual(moved, configComment)
-    const problem = `the comment in .gitleaks.toml names ${JSON.stringify(notReported)}, a value database-password does not report, under ${JSON.stringify(sentence(notReported))}`
-    assert.ok(misnamed(moved, NOT_REPORTED, false, [...CLAIMS, sentence(notReported)]).includes(problem), moved)
+    const movedProblems = misnamed(moved, NOT_REPORTED, false, [...CLAIMS, sentence(notReported)])
+    const notProblem = `the comment in .gitleaks.toml names ${JSON.stringify(notReported)}, a value database-password does not report, under ${JSON.stringify(sentence(notReported))}`
+    assert.deepEqual(movedProblems, says ? [notProblem] : [], moved)
     const added = configComment.replace(last, () => `${last} ${sentence(reported)}`)
     assert.notEqual(added, configComment)
     assert.notDeepEqual(misnamed(added, REPORTED, true), [], added)
-    assert.deepEqual(misnamed(added, REPORTED, true, [...CLAIMS, sentence(reported)]), [], added)
+    const addedProblems = misnamed(added, REPORTED, true, [...CLAIMS, sentence(reported)])
+    const problem = `the comment in .gitleaks.toml names ${JSON.stringify(reported)}, a value database-password reports, under ${JSON.stringify(sentence(reported))}`
+    assert.deepEqual(addedProblems, says ? [] : [problem], added)
   }
 })
 
