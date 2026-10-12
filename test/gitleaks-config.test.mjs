@@ -222,11 +222,12 @@ const REPORTED = [
 const configComment = config.split('\n').filter((text) => text.startsWith('#')).map((text) => text.replace(/^#\s?(?:-\s)?/, '')).join(' ').replace(/\s+/g, ' ')
 
 // Words from each sentence in the comment of .gitleaks.toml that says a rule
-// reports, or does not report, a kind of value. A kind is named under the last
-// sentence that says what a rule reports and that starts before the end of the
-// sentence the kind is in: that sentence, where it says so before or after the
-// kind, or else the last one before it, with the bullets and sentences after
-// that one.
+// reports, or does not report, a kind of value. A kind is named under the
+// nearest of these before it in the sentence it is in, or else the first one
+// after it in that sentence, or else the last one before that sentence, with
+// the bullets and sentences after that one. So in a sentence that says both,
+// such as "<rule> reports <kind>, so <rule> does not report <other kind>",
+// each kind is named under the words before it.
 const CLAIMS = [
   'api-key-generic and database-password do not report a value that allowlist matches',
   'is not of these kinds, so database-password reports values such as',
@@ -254,6 +255,17 @@ function sentenceEnd(text, from) {
   return stop.exec(text)?.index ?? text.length
 }
 
+// The index in text where the sentence that holds the index at starts: just
+// after the last `.`, `!` or `?` before it that a space follows, or 0.
+function sentenceStart(text, at) {
+  let start = 0
+  for (const stop of text.matchAll(/[.!?](?=\s|$)/g)) {
+    if (stop.index >= at) break
+    start = stop.index + 1
+  }
+  return start
+}
+
 // Each index in text where part starts.
 function indexesOf(text, part) {
   const indexes = []
@@ -279,8 +291,11 @@ function misnamed(comment, entries, reported) {
     const places = placesOf(comment, kind)
     if (places.length === 0) problems.push(`the comment in .gitleaks.toml does not name ${JSON.stringify(kind)}, a value ${id} ${says}`)
     for (const place of places) {
+      const start = sentenceStart(comment, place)
       const end = sentenceEnd(comment, place + kind.length)
-      const verb = verbs.findLast((match) => match.index < end)
+      const before = verbs.findLast((match) => match.index < place)
+      const after = verbs.find((match) => place + kind.length <= match.index && match.index < end)
+      const verb = before && start <= before.index ? before : after ?? before
       const claim = verb && CLAIMS.find((words) => indexesOf(comment, words).some((start) => start <= verb.index && verb.index < start + words.length))
       if (!claim) {
         const under = verb ? JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length)) : 'no sentence that says what a rule reports'
@@ -340,6 +355,20 @@ test('the comment checks fail when a sentence with any form of the verb names a 
     assert.notEqual(comment, configComment)
     assert.ok(misnamed(comment, NOT_REPORTED, false).some((problem) => problem.includes(`names ${JSON.stringify(kind)}`)), comment)
   }
+})
+
+test('the comment checks fail when a sentence names a value in NOT_REPORTED as reported before it says the value is not reported', () => {
+  const kind = '$<U+212A>EYNAME_X'
+  assert.ok(configComment.includes(`${kind}, `))
+  const comment = configComment.replace(`${kind}, `, '') + ` Note that database-password reports ${kind}, which the (?i) matches as k and s, so database-password does not report it.`
+  assert.ok(misnamed(comment, NOT_REPORTED, false).some((problem) => problem.includes(`names ${JSON.stringify(kind)}`)), comment)
+})
+
+test('the comment checks pass when a sentence that names the values in REPORTED as reported says after them that other values are not reported', () => {
+  const comment = configComment.replace('the Arabic-Indic digit three.', 'the Arabic-Indic digit three, and two letters which the (?i) matches as k and s, so database-password does not report them.')
+  assert.notEqual(comment, configComment)
+  assert.deepEqual(misnamed(comment, REPORTED, true), [], comment)
+  assert.deepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
 })
 
 test('gitleaks reports each line in REPORTED under its rule and prints no value', { skip }, () => {
