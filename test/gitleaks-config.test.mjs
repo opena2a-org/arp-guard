@@ -283,8 +283,10 @@ const LISTED = ['or', 'and']
 
 // The stops of a sentence: a `.`, `!` or `?` that a space or the end of the
 // text follows, other than the `.` that ends e.g. or i.e., in any case, which a
-// sentence goes on past.
-const STOP = /(?<!\b(?:e\.g|i\.e))[.!?](?=\s|$)/gi
+// sentence goes on past. Only that `.` is not a stop: a `!` or `?` after e.g or
+// i.e is one, and so is the `.` after a longer word that ends with those
+// letters, such as page.g. or api.e.
+const STOP = /(?:(?<!\b(?:e\.g|i\.e))\.|[!?])(?=\s|$)/gi
 
 // The index in text where the sentence that holds the index from ends: the
 // first stop from there on.
@@ -453,9 +455,16 @@ test('the comment checks pass when a sentence that names the values in REPORTED 
   const comment = configComment.replace('the Arabic-Indic digit three.', 'the Arabic-Indic digit three, and two letters which the (?i) matches as k and s, so database-password does not report them.')
   assert.notEqual(comment, configComment)
   // The words after the values that say what a rule reports, stated as a claim.
-  const claims = [...CLAIMS, { words: 'which the (?i) matches as k and s, so database-password does not report', reported: false }]
-  assert.deepEqual(misnamed(comment, REPORTED, true, claims), [], comment)
-  assert.deepEqual(misnamed(comment, NOT_REPORTED, false, claims), [], comment)
+  // A sentence in CLAIMS ends with the same words, so there the words of both
+  // claims hold the verb and end at the same place, and the checks read the
+  // claim that starts first, whichever of the two is stated first: The stands
+  // before the words of the other in that sentence.
+  const added = { words: 'which the (?i) matches as k and s, so database-password does not report', reported: false }
+  assert.ok(CLAIMS.some(({ words }) => words !== added.words && words.endsWith(added.words)))
+  for (const claims of [[...CLAIMS, added], [added, ...CLAIMS]]) {
+    assert.deepEqual(misnamed(comment, REPORTED, true, claims), [], comment)
+    assert.deepEqual(misnamed(comment, NOT_REPORTED, false, claims), [], comment)
+  }
 })
 
 test('the comment checks fail when words after a value in its sentence say what a rule reports and are not in CLAIMS, even after a claim and with the verb that agrees', () => {
@@ -659,6 +668,15 @@ test('the comment checks read a sentence on past the `.` that ends e.g. or i.e.,
     const problems = misnamed(comment, NOT_REPORTED, false)
     assert.ok(problems.length > 0, comment)
     for (const problem of problems) assert.ok(problem.endsWith(`under ${JSON.stringify(words)}, with "It" before them in their sentence, a word the checks do not read there`), problem)
+  }
+})
+
+test('the comment checks end a sentence at a `!` or `?` after e.g or i.e, and at the `.` after a longer word that ends with those letters, so a word before it does not stand before a claim', () => {
+  const words = CLAIMS.find((claim) => claim.words.startsWith('So api-key-generic and database-password')).words
+  for (const ending of ['e.g!', 'e.g?', 'i.e!', 'i.e?', 'page.g.', 'api.e.']) {
+    const comment = configComment.replace(words, () => `It is as in ${ending} ${words}`)
+    assert.notEqual(comment, configComment)
+    assert.deepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
   }
 })
 
