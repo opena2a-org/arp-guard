@@ -38,16 +38,17 @@ useDefault = true
 # in any case, and the (?i) of (?i)^true|false|null$ applies to the default
 # regexes after it.
 # The letters in the reference, {{...}}, ${{...}} and path kinds are ASCII
-# letters, and the digits in the {{...}} and ${{...}} kinds are ASCII digits,
-# since the default regexes for them use \w and ranges of ASCII letters, such
+# letters, and the digits in those kinds are ASCII digits, since the default
+# regexes for them use \w and other classes of ASCII letters and digits, such
 # as [A-Za-z]. A value with any other letter or digit in those places is not
 # of these kinds, so database-password reports values such as
-# $P<U+00C4>SSWORD_X, ${P<U+00C4>SSWORD}, %P<U+00C4>SSWORD%,
-# {{p<U+00E4>ssword}}, ${{secrets.P<U+00C4>SSWORD}}, /tmp/p<U+00E4>ssword,
-# /Users/<U+00E4>pp/dbpassword, {{pass<U+0663>word}} or
-# ${{secrets.DB_PASSWORD<U+0663>}}, where U+0663 is the Arabic-Indic digit
-# three. It still does not report such a value when another kind above
-# matches it, such as {{p<U+00E4>sswordfalse}}, which contains `false`, or
+# $P<U+00C4>SSWORD_X, ${P<U+00C4>SSWORD}, %P<U+00C4>SSWORD%, $1234567<U+0663>,
+# ${1234567<U+0663>}, {{p<U+00E4>ssword}}, {{pass<U+0663>word}},
+# ${{secrets.P<U+00C4>SSWORD}}, ${{secrets.DB_PASSWORD<U+0663>}},
+# /tmp/p<U+00E4>ssword, /tmp/pass<U+0663>word, /Users/<U+00E4>pp/dbpassword or
+# /Users/app<U+0663>/dbpassword, where U+0663 is the Arabic-Indic digit three.
+# It still does not report such a value when another kind above matches it,
+# such as {{p<U+00E4>sswordfalse}}, which contains `false`, or
 # {{<U+00E4>abcdefghijklmnopqrstuvwxyz}}, which holds the alphabet.
 # The only exceptions are two letters, U+212A (the Kelvin sign) and U+017F
 # (the long s), which the (?i) matches as k and s, so database-password does
