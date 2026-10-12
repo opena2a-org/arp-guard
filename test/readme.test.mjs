@@ -11,7 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -213,14 +213,24 @@ test('a fence with text after it does not close a code block', () => {
 
 test('a long fence run that ends in a carriage return is read in linear time', () => {
   const run = '`'.repeat(200_000)
-  const started = Date.now()
+  const started = performance.now()
   const blocks = fencedBlocks([`${run}\r`, 'x', run])
-  const elapsed = Date.now() - started
+  const elapsed = performance.now() - started
   assert.deepEqual(
     blocks.map(({ start, end }) => [start, end]),
     [[1, 3]],
   )
-  assert.ok(elapsed < 1_000, `reading the fences took ${elapsed} ms`)
+  assert.ok(elapsed < 1_000, `reading the fences took ${Math.round(elapsed)} ms`)
+})
+
+// A step of the system clock moves Date.now() and not performance.now(), so a
+// step forward while a test times a run would fail a limit such as
+// `elapsed < 1_000`.
+test('the tests that time a run measure it with performance.now()', () => {
+  const lines = readFileSync(new URL(import.meta.url), 'utf8').split('\n')
+  const timing = lines.flatMap((text, index) => (/\b(?:started|elapsed) = (?:Date|performance)\.now\(\)/.test(text) ? [`line ${index + 1}: ${text.trim()}`] : []))
+  assert.ok(timing.length > 0, 'no test here times a run')
+  assert.deepEqual(timing.filter((line) => !line.includes('performance.now()')), [])
 })
 
 test('the documented script runs in its own process against the built package', async () => {
@@ -430,10 +440,10 @@ test('a comment that names a temporary-directory function fails the check with a
 
 test('import lines with a block comment that is never closed are read in linear time', () => {
   const source = 'import /*\n'.repeat(20_000)
-  const started = Date.now()
+  const started = performance.now()
   const clauses = [...source.matchAll(IMPORT_CLAUSE)]
-  const elapsed = Date.now() - started
-  assert.ok(elapsed < 1_000, `reading the import clauses took ${elapsed} ms`)
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 1_000, `reading the import clauses took ${Math.round(elapsed)} ms`)
   assert.deepEqual(
     clauses.map(({ 0: text, index }) => [index, text.length]),
     [[0, source.length]],
@@ -576,14 +586,16 @@ test('the process started outside the group is stopped by t.after while the body
 // Starts a node process that runs `commands` through the module at `helper`,
 // as the test process does, with `tmp` as its temp dir, so the scratch
 // directories it makes are the ones `scratchDirs(tmp)` lists. Its stderr is
-// kept: a runner that fails to start says why there and nowhere else.
+// kept: a runner that fails to start says why there and nowhere else. It gets
+// PATH, which runAsDocumented passes on to the documented commands, and TMPDIR,
+// and no other variable of the test process.
 function startRunner(helper, commands, tmp) {
   // Without `tmp` the runner would start with no TMPDIR and make its scratch
   // directories in the system temp dir, where `scratchDirs(tmp)` does not look.
   assert.equal(typeof tmp, 'string', 'startRunner was not given the temp dir for the runner')
   const script = `import { runAsDocumented } from ${JSON.stringify(helper)}\nawait runAsDocumented(${JSON.stringify(commands)}, { timeout: 60_000 })`
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
-    env: { ...process.env, TMPDIR: tmp },
+    env: { PATH: process.env.PATH, TMPDIR: tmp },
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   let stderr = ''
@@ -770,6 +782,38 @@ test('a runner that ignores SIGTERM is killed once the time to stop has passed',
     } finally {
       // stopRunner is what this test checks, so it is not trusted to clean up.
       if (runner.child.exitCode === null && runner.child.signalCode === null) runner.child.kill('SIGKILL')
+    }
+  }),
+)
+
+// A helper for startRunner whose runAsDocumented takes the name of a file in
+// place of commands and records there the names of the variables in the
+// runner's environment.
+const recordsEnvironment = `data:text/javascript,${encodeURIComponent(`
+import { writeFileSync } from 'node:fs'
+export function runAsDocumented(namesFile) {
+  writeFileSync(namesFile, JSON.stringify(Object.keys(process.env).sort()))
+}`)}`
+
+test('the runner gets PATH and its temp dir, and no other variable of the test process', { timeout: 10_000 }, () =>
+  withScratch(async (scratch) => {
+    const name = 'AGENT_RUNTIME_PROTECTION_README_TEST_PROBE'
+    const namesFile = join(scratch, 'names')
+    // The variables a node process started with no environment has anyway,
+    // such as the __CF_USER_TEXT_ENCODING macOS sets in each process.
+    const own = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env)))'], { env: {}, encoding: 'utf8' })
+    assert.equal(own.status, 0, own.stderr)
+    const added = JSON.parse(own.stdout)
+    process.env[name] = 'visible'
+    let runner
+    try {
+      runner = startRunner(recordsEnvironment, namesFile, scratch)
+      assert.equal(await runner.ended, 0, `the runner failed; its stderr:\n${runner.stderr()}`)
+      const names = JSON.parse(readFileSync(namesFile, 'utf8'))
+      assert.deepEqual(names.filter((other) => !added.includes(other)), ['PATH', 'TMPDIR'])
+    } finally {
+      delete process.env[name]
+      if (runner) await stopRunner(runner)
     }
   }),
 )
