@@ -1067,11 +1067,89 @@ test('the file probe prints the same lines when the watcher drops the event for 
   ])
 })
 
+// A stand-in for the package whose watcher reports only the files the probe's
+// fences write, whose names start with `fence-`, and counts the files the probe
+// writes for its new-file row. The probe gives up on that row after sixty files
+// and about thirty seconds, prints `not reported` for it, and the stand-in
+// prints how many files it saw written for it.
+const FENCE_ONLY_WATCHER = String.raw`
+const fs = require("fs");
+class AgentRuntimeProtection {
+  handlers = [];
+  written = 0;
+  onEvent(handler) { this.handlers.push(handler); }
+  async start() {
+    this.writeFileSync = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (file.startsWith("fence-")) setImmediate(() => { for (const handler of this.handlers) handler({ source: "filesystem", description: "File created/renamed: " + file }); });
+      if (file.startsWith("written-")) this.written++;
+      return this.writeFileSync.call(fs, file, ...rest);
+    };
+  }
+  async stop() {
+    fs.writeFileSync = this.writeFileSync;
+    console.log("files written for the new-file row: " + this.written);
+  }
+}
+${OBSERVE}
+(async () => {
+  fs.writeFileSync("read.txt", "FAKE");
+  await observe("fence-only watcher", {}, [
+    ["write a new file", "written-", (seen) => writeUntilReported(seen, "written-")],
+    ["read a file", "read.txt", () => fs.readFileSync("read.txt")],
+  ]);
+})();
+`
+
+// A stand-in for the package whose watcher reports nothing, and that prints to
+// stderr, as the script exits, how many fence files it saw written. The
+// probe's first fence gives up after sixty files and about thirty seconds and
+// throws, so the script exits 1.
+const SILENT_WATCHER = String.raw`
+const fs = require("fs");
+class AgentRuntimeProtection {
+  onEvent() {}
+  async start() {
+    let fences = 0;
+    this.writeFileSync = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => { if (file.startsWith("fence-")) fences++; return this.writeFileSync.call(fs, file, ...rest); };
+    process.on("exit", () => console.error("fence files written: " + fences));
+  }
+  async stop() { fs.writeFileSync = this.writeFileSync; }
+}
+${OBSERVE}
+observe("silent watcher", {}, []);
+`
+
+// The give-up path of writeUntilReported: each stand-in waits out the whole
+// limit, about thirty seconds, so the two run at once.
+test('the file probe gives up on a watcher after sixty files and about thirty seconds', { timeout: 120_000, concurrency: true }, async (t) => {
+  await Promise.all([
+    t.test('a row whose files no event names reads not reported', async () => {
+      assert.deepEqual(await runAsDocumented(`node -e '${FENCE_ONLY_WATCHER}'`, { timeout: 90_000 }), [
+        'files written for the new-file row: 60',
+        'fence-only watcher, write a new file: not reported',
+        'fence-only watcher, read a file: not reported',
+      ])
+    }),
+    t.test('a fence whose files no event names ends the run with an error', async () => {
+      await assert.rejects(runAsDocumented(`node -e '${SILENT_WATCHER}'`, { timeout: 90_000 }), (error) => {
+        assert.match(error.message, /^the documented commands exited 1:/)
+        assert.match(error.message, /Error: no filesystem event named any of the sixty files written over thirty seconds/)
+        assert.match(error.message, /^fence files written: 60$/m)
+        return true
+      })
+    }),
+  ])
+})
+
 // The section once said file access was monitored. A read is file access, and
 // the default monitor reports no read. It then said the interceptor reports a
 // read made through `fs.readFile` or `fs.readFileSync`, which holds only for a
-// call on the CommonJS `fs` module object. When the monitor reports these
-// operations differently, change these lists and the section together.
+// call on the CommonJS `fs` module object. It also read as if the monitor
+// reported every change, and on a loaded machine the watcher once dropped the
+// event for the probe's new file. When the monitor reports these operations
+// differently, change these lists and the section together.
 //
 // The first probe waits on a watcher three times, for its two fences and its
 // new file, each for up to thirty seconds. So it gets 120 seconds, not the 30
@@ -1110,6 +1188,7 @@ test('the Runtime monitoring section says which file operations the monitor repo
   for (const claim of [
     'file changes under the working directory',
     'File reads are not monitored by default.',
+    'A change can go unreported as well: on a loaded machine, `fs.watch` can drop the event for a new file and still report a file written after it.',
     'reports reads of a fixed list of sensitive paths',
     'made by calling `readFile` or `readFileSync` on the CommonJS `fs` module object between `start()` and `stop()`',
     "`require('fs')` returns that object, and an ES module gets it as the default import (`import fs from 'node:fs'`)",
