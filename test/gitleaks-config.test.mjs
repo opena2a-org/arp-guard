@@ -25,9 +25,10 @@
 // next to it the opposite of what gitleaks does. The checks do not read from
 // its words whether a sentence says not, since no list of words that can say
 // not holds them all. They also fail when a word that is not in a value, `or`
-// or `and` stands between the words of a claim and a value named under it in
-// its sentence, such as the but in "<rule> reports every value, but not
-// <value>".
+// or `and` stands before the words of a claim in its sentence, such as the
+// Never in "Never assume that <rule> does not report <value>", or between those
+// words and a value named under them in their sentence, such as the but in
+// "<rule> reports every value, but not <value>".
 //
 // The sample lines are assembled from parts at run time, so the source of this
 // file holds nothing a secret scanner reports.
@@ -242,12 +243,14 @@ const configComment = config.split('\n').filter((text) => text.startsWith('#')).
 // under the words before it. Words after a kind in its sentence that say what
 // a rule reports can say it of that kind too, so they are in one of these as
 // well, or the checks fail: "<rule> does not report <kind>, but <other kind>
-// is reported" fails for both kinds.
+// is reported" fails for both kinds. The words of a claim start where its
+// sentence starts, since a word before them, such as Never or Nobody, can say
+// the opposite of what they say.
 const CLAIMS = [
-  { words: 'api-key-generic and database-password do not report a value that allowlist matches', reported: false },
-  { words: 'is not of these kinds, so database-password reports values such as', reported: true },
+  { words: 'So api-key-generic and database-password do not report a value that allowlist matches', reported: false },
+  { words: 'A value with any other letter or digit in those places is not of these kinds, so database-password reports values such as', reported: true },
   { words: 'It still does not report such a value when another kind above matches it, such as', reported: false },
-  { words: 'which the (?i) matches as k and s, so database-password does not report', reported: false },
+  { words: 'The only exceptions are two letters, U+212A (the Kelvin sign) and U+017F (the long s), which the (?i) matches as k and s, so database-password does not report', reported: false },
 ]
 
 // Every kind of value the comment checks read. A kind named inside a longer
@@ -261,15 +264,17 @@ const KINDS = [...NOT_REPORTED, ...REPORTED].map(({ kind }) => kind)
 // sentence that is not in CLAIMS.
 const VERB = /\w*report\w*/gi
 
-// The words, other than values, that can stand between the words of a claim
-// and a value named under it in its sentence: those that join the values of a
-// list, as in "<rule> does not report <kind>, <kind> or <kind>". A comma can
-// stand there too. Any other word there can change what the claim says of the
-// value, as not does in "<rule> reports every value, but not <kind>", so it
-// fails the checks; put it in the words of a claim, and state what that claim
-// says. The checks read no other word that is not in a claim: not one on the
-// far side of a value from its claim, as in "Only <kind> is reported by
-// <rule>", and not one in a sentence after the claim, such as a bullet, whose
+// The words, other than values, that can stand before the words of a claim in
+// its sentence, or between them and a value named under them in their
+// sentence: those that join the values of a list, as in "<rule> does not
+// report <kind>, <kind> or <kind>", or "<kind> and <kind> are not reported by
+// <rule>". A comma can stand there too. Any other word there can change what
+// the claim says of the value, as not does in "<rule> reports every value, but
+// not <kind>", and Only does in "Only <kind> is reported by <rule>", so it fails
+// the checks; put it in the words of a claim, and state what that claim says.
+// The checks read no other word that is not in a claim: not one after both a
+// claim and a value in their sentence, as in "<rule> reports <kind> only
+// rarely", and not one in a sentence after the claim, such as a bullet, whose
 // values are named under the claim before it.
 const LISTED = ['or', 'and']
 
@@ -296,8 +301,11 @@ function sentenceStart(text, at) {
   return start
 }
 
-// Each index in text where part starts.
+// Each index in text where part starts. An empty part starts at every index,
+// and indexOf finds it at the end of text from any index past that end, so it
+// is refused.
 function indexesOf(text, part) {
+  assert.ok(typeof part === 'string' && part !== '', `indexesOf was given ${JSON.stringify(part)} to find, not text: an empty string is at every index`)
   const indexes = []
   for (let index = text.indexOf(part); index !== -1; index = text.indexOf(part, index + 1)) indexes.push(index)
   return indexes
@@ -309,27 +317,39 @@ function placesOf(text, kind) {
   return indexesOf(text, kind).filter((place) => !longer.some((other) => indexesOf(text, other).some((start) => start <= place && place + kind.length <= start + other.length)))
 }
 
-// The first word in comment between the words of a claim, from wordsStart to
-// wordsStart + words.length, and a kind named from place to place + length,
-// other than a word in a kind, a word in LISTED and a comma, or nothing when
-// the kind is in the words of the claim. For "<rule> reports every value, but
-// not <kind>" that is but.
-function unlisted(comment, words, wordsStart, place, length) {
+// The first word in comment, other than a word in a kind, a word in LISTED and
+// a comma, between the words of a claim, from wordsStart to wordsStart +
+// words.length, and a kind named in their sentence from place to place +
+// length, or else before those words in their sentence, with where it stands;
+// or nothing. Nothing stands between the two when the kind is in the words of
+// the claim, and the words between them are read only when sameSentence is
+// true. For "<rule> reports every value, but not <kind>" that is but, between
+// them, and for "Never assume that <rule> does not report <kind>" it is Never,
+// before them.
+function unlisted(comment, words, wordsStart, place, length, sameSentence) {
   const wordsEnd = wordsStart + words.length
-  const between = wordsEnd <= place ? comment.slice(wordsEnd, place) : place + length <= wordsStart ? comment.slice(place + length, wordsStart) : ''
   const longestFirst = [...KINDS].sort((a, b) => b.length - a.length)
-  return longestFirst.reduce((text, kind) => text.replaceAll(kind, ' '), between).split(/[\s,]+/).find((word) => word && !LISTED.includes(word))
+  const first = (text) => longestFirst.reduce((rest, kind) => rest.replaceAll(kind, ' '), text).split(/[\s,]+/).find((word) => word && !LISTED.includes(word))
+  const between = !sameSentence ? '' : wordsEnd <= place ? comment.slice(wordsEnd, place) : place + length <= wordsStart ? comment.slice(place + length, wordsStart) : ''
+  const word = first(between)
+  if (word) return { word, where: 'between them' }
+  const lead = first(comment.slice(sentenceStart(comment, wordsStart), wordsStart))
+  if (lead) return { word: lead, where: 'before them in their sentence' }
 }
 
 // What is wrong with how the comment names the kinds of the entries, which
 // gitleaks reports when reported is true and does not report otherwise: a kind
 // the comment does not name, or names under a sentence that is not in claims,
-// or that claims states says the opposite, or names in the sentence of a claim
-// with a word unlisted finds between the two, or names before words in its
-// sentence that say what a rule reports and are not in claims.
+// or that claims states says the opposite, or names under a claim with a word
+// unlisted finds before its words or between them and the kind, or names
+// before words in its sentence that say what a rule reports and are not in
+// claims.
 function misnamed(comment, entries, reported, claims = CLAIMS) {
   for (const claim of claims) {
-    assert.ok(typeof claim.words === 'string' && typeof claim.reported === 'boolean', `a claim states its words and, as reported, whether they say a value is reported: ${JSON.stringify(claim)}`)
+    assert.ok(typeof claim.words === 'string' && claim.words !== '' && typeof claim.reported === 'boolean', `a claim states its words and, as reported, whether they say a value is reported: ${JSON.stringify(claim)}`)
+  }
+  for (const entry of entries) {
+    assert.ok(typeof entry.id === 'string' && typeof entry.kind === 'string' && entry.kind !== '', `an entry states its rule and the words that name its kind: ${JSON.stringify(entry)}`)
   }
   const verbs = [...comment.matchAll(VERB)]
   const says = reported ? 'reports' : 'does not report'
@@ -353,11 +373,11 @@ function misnamed(comment, entries, reported, claims = CLAIMS) {
       const after = verbs.filter((match) => place + kind.length <= match.index && match.index < end)
       const verb = before && start <= before.index ? before : after[0] ?? before
       const claim = verb && claimOf(verb)
-      const unread = claim && start <= verb.index && unlisted(comment, claim.words, claim.start, place, kind.length)
+      const unread = claim && unlisted(comment, claim.words, claim.start, place, kind.length, start <= verb.index)
       if (!claim) {
         problems.push(`${names} ${verb ? around(verb) : 'no sentence that says what a rule reports'}, which is not a sentence in the claims`)
       } else if (unread) {
-        problems.push(`${names} ${JSON.stringify(claim.words)}, with ${JSON.stringify(unread)} between them, a word the checks do not read there`)
+        problems.push(`${names} ${JSON.stringify(claim.words)}, with ${JSON.stringify(unread.word)} ${unread.where}, a word the checks do not read there`)
       } else if (claim.reported !== reported) {
         problems.push(`${names} ${JSON.stringify(claim.words)}`)
       }
@@ -428,8 +448,10 @@ test('the comment checks fail when a sentence names a value in NOT_REPORTED as r
 test('the comment checks pass when a sentence that names the values in REPORTED as reported says after them that other values are not reported', () => {
   const comment = configComment.replace('the Arabic-Indic digit three.', 'the Arabic-Indic digit three, and two letters which the (?i) matches as k and s, so database-password does not report them.')
   assert.notEqual(comment, configComment)
-  assert.deepEqual(misnamed(comment, REPORTED, true), [], comment)
-  assert.deepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
+  // The words after the values that say what a rule reports, stated as a claim.
+  const claims = [...CLAIMS, { words: 'which the (?i) matches as k and s, so database-password does not report', reported: false }]
+  assert.deepEqual(misnamed(comment, REPORTED, true, claims), [], comment)
+  assert.deepEqual(misnamed(comment, NOT_REPORTED, false, claims), [], comment)
 })
 
 test('the comment checks fail when words after a value in its sentence say what a rule reports and are not in CLAIMS, even after a claim and with the verb that agrees', () => {
@@ -547,10 +569,11 @@ test('the comment checks fail when a word other than `or` and `and` stands betwe
   // The words of a claim, and the last two values of the list after it, which
   // the comment joins with or.
   const lists = [
-    [NOT_REPORTED, false, 'which the (?i) matches as k and s, so database-password does not report', '${{secrets.pa<U+017F><U+017F>word}}', '/tmp/pa<U+017F><U+017F>word'],
-    [REPORTED, true, 'is not of these kinds, so database-password reports values such as', '/Users/<U+00E4>pp/dbpassword', '/Users/app<U+0663>/dbpassword'],
+    [NOT_REPORTED, false, 'so database-password does not report', '${{secrets.pa<U+017F><U+017F>word}}', '/tmp/pa<U+017F><U+017F>word'],
+    [REPORTED, true, 'so database-password reports values such as', '/Users/<U+00E4>pp/dbpassword', '/Users/app<U+0663>/dbpassword'],
   ]
-  for (const [entries, reported, words, previous, kind] of lists) {
+  for (const [entries, reported, ending, previous, kind] of lists) {
+    const words = CLAIMS.find((claim) => claim.words.endsWith(ending)).words
     const from = `${previous} or ${kind}`
     assert.ok(configComment.includes(from))
     for (const joiner of [', ', ' or ', ' and ', ', or ', ', and ']) {
@@ -575,14 +598,40 @@ test('the comment checks read the words between a value and the words of a claim
   const listed = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${kind} and ${other} are not reported by database-password.`)
   assert.deepEqual(misnamed(listed, NOT_REPORTED, false, [...CLAIMS, claim]), [], listed)
   const unlistedWord = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${kind}, unlike ${other}, are not reported by database-password.`)
-  const problem = `the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value database-password does not report, under ${JSON.stringify(claim.words)}, with "unlike" between them, a word the checks do not read there`
-  assert.deepEqual(misnamed(unlistedWord, NOT_REPORTED, false, [...CLAIMS, claim]), [problem], unlistedWord)
+  // unlike stands between kind and the claim, and before the claim in the
+  // sentence that names other under it.
+  const under = (named, where) => `the comment in .gitleaks.toml names ${JSON.stringify(named)}, a value database-password does not report, under ${JSON.stringify(claim.words)}, with "unlike" ${where}, a word the checks do not read there`
+  assert.deepEqual(misnamed(unlistedWord, NOT_REPORTED, false, [...CLAIMS, claim]), [under(other, 'before them in their sentence'), under(kind, 'between them')], unlistedWord)
+})
+
+test('the comment checks fail when a word stands before the words of a claim in its sentence, also for a value named in a later sentence', () => {
+  for (const lead of ['Never assume that', 'Nobody claims']) {
+    for (const claim of CLAIMS) {
+      const comment = configComment.replace(claim.words, () => `${lead} ${claim.words}`)
+      assert.notEqual(comment, configComment)
+      const problems = misnamed(comment, claim.reported ? REPORTED : NOT_REPORTED, claim.reported)
+      assert.ok(problems.length > 0, comment)
+      const word = lead.split(' ')[0]
+      for (const problem of problems) assert.ok(problem.endsWith(`under ${JSON.stringify(claim.words)}, with ${JSON.stringify(word)} before them in their sentence, a word the checks do not read there`), problem)
+    }
+  }
+  // A whole sentence written over, as the issue that asked for this check did.
+  const sentence = 'api-key-generic and database-password do not report a value that allowlist matches.'
+  assert.ok(configComment.includes(sentence))
+  const rewritten = configComment.replace(/\S+ (?=api-key-generic and database-password do not report)/, 'Never assume that ')
+  assert.notEqual(rewritten, configComment)
+  assert.notDeepEqual(misnamed(rewritten, NOT_REPORTED, false), [], rewritten)
 })
 
 test('the comment checks refuse a claim that does not state, as reported, what it says of a value', () => {
-  for (const claim of ['database-password reports', { words: 'database-password reports' }, { words: 'database-password reports', reported: 'yes' }]) {
+  for (const claim of ['database-password reports', { words: 'database-password reports' }, { words: 'database-password reports', reported: 'yes' }, { words: '', reported: true }]) {
     assert.throws(() => misnamed(configComment, REPORTED, true, [...CLAIMS, claim]), /^AssertionError.*a claim states its words/, JSON.stringify(claim))
   }
+})
+
+test('the comment checks refuse an entry with no kind and an empty string to find, and return', () => {
+  assert.throws(() => misnamed(configComment, [{ id: 'database-password', kind: '' }, ...REPORTED], true), /^AssertionError.*an entry states its rule and the words that name its kind/)
+  assert.throws(() => indexesOf(configComment, ''), /^AssertionError.*an empty string/)
 })
 
 test('the comment checks fail when the comment does not name a value in NOT_REPORTED or REPORTED', () => {
