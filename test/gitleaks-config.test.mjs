@@ -281,9 +281,10 @@ function placesOf(text, kind) {
 
 // What is wrong with how the comment names the kinds of the entries, which
 // gitleaks reports when reported is true and does not report otherwise: a kind
-// the comment does not name, or names under a sentence that is not in CLAIMS or
-// that says the opposite.
-function misnamed(comment, entries, reported) {
+// the comment does not name, or names under a sentence that is not in claims or
+// that says the opposite. A sentence in claims says a value is not reported
+// when the words that say so hold `not`, and says it is reported otherwise.
+function misnamed(comment, entries, reported, claims = CLAIMS) {
   const verbs = [...comment.matchAll(VERB)]
   const says = reported ? 'reports' : 'does not report'
   const problems = []
@@ -296,7 +297,7 @@ function misnamed(comment, entries, reported) {
       const before = verbs.findLast((match) => match.index < place)
       const after = verbs.find((match) => place + kind.length <= match.index && match.index < end)
       const verb = before && start <= before.index ? before : after ?? before
-      const claim = verb && CLAIMS.find((words) => indexesOf(comment, words).some((start) => start <= verb.index && verb.index < start + words.length))
+      const claim = verb && claims.find((words) => indexesOf(comment, words).some((start) => start <= verb.index && verb.index < start + words.length))
       if (!claim) {
         const under = verb ? JSON.stringify(comment.slice(Math.max(0, verb.index - 60), verb.index + verb[0].length)) : 'no sentence that says what a rule reports'
         problems.push(`the comment in .gitleaks.toml names ${JSON.stringify(kind)}, a value ${id} ${says}, under ${under}, which is not a sentence in CLAIMS`)
@@ -369,6 +370,38 @@ test('the comment checks pass when a sentence that names the values in REPORTED 
   assert.notEqual(comment, configComment)
   assert.deepEqual(misnamed(comment, REPORTED, true), [], comment)
   assert.deepEqual(misnamed(comment, NOT_REPORTED, false), [], comment)
+})
+
+test('the comment checks read a sentence on past a `.` that a space does not follow, between a value and the verb', () => {
+  const kind = '/tmp/pa<U+017F><U+017F>word'
+  for (const between of ['as set in app.yml', 'like {{.Values.name}}']) {
+    const comment = configComment.replace(`\${{secrets.pa<U+017F><U+017F>word}} or ${kind}.`, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${kind}, ${between}, is reported by database-password.`)
+    assert.notEqual(comment, configComment)
+    assert.ok(misnamed(comment, NOT_REPORTED, false).some((problem) => problem.includes(`names ${JSON.stringify(kind)}`)), comment)
+  }
+})
+
+test('the comment checks read a sentence in the claims with any form of the verb as saying a value is reported unless it holds not', () => {
+  const notReported = '/tmp/pa<U+017F><U+017F>word'
+  const reported = '$P<U+00C4>SSWORD_X'
+  const sentences = [
+    (kind) => `${kind} is reported by database-password.`,
+    (kind) => `Both rules report ${kind}.`,
+    (kind) => `database-password reported ${kind} in a test run.`,
+    (kind) => `Reported by database-password: ${kind}.`,
+    (kind) => `database-password reports ${kind}.`,
+  ]
+  const last = `\${{secrets.pa<U+017F><U+017F>word}} or ${notReported}.`
+  for (const sentence of sentences) {
+    const moved = configComment.replace(last, () => `\${{secrets.pa<U+017F><U+017F>word}}. ${sentence(notReported)}`)
+    assert.notEqual(moved, configComment)
+    const problem = `the comment in .gitleaks.toml names ${JSON.stringify(notReported)}, a value database-password does not report, under ${JSON.stringify(sentence(notReported))}`
+    assert.ok(misnamed(moved, NOT_REPORTED, false, [...CLAIMS, sentence(notReported)]).includes(problem), moved)
+    const added = configComment.replace(last, () => `${last} ${sentence(reported)}`)
+    assert.notEqual(added, configComment)
+    assert.notDeepEqual(misnamed(added, REPORTED, true), [], added)
+    assert.deepEqual(misnamed(added, REPORTED, true, [...CLAIMS, sentence(reported)]), [], added)
+  }
 })
 
 test('gitleaks reports each line in REPORTED under its rule and prints no value', { skip }, () => {
