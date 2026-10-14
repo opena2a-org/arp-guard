@@ -20,6 +20,11 @@ import { root, runAsDocumented } from './run-as-documented.mjs'
 
 const readme = readFileSync(join(root, 'README.md'), 'utf8').split('\n')
 
+// Pages the README links for the reference text it does not carry. The
+// sections that moved there are checked where they now live.
+const benchmarkPage = readFileSync(join(root, 'docs', 'benchmark.md'), 'utf8').split('\n')
+const runtimePage = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
+
 const INSTALL = 'npm install agent-runtime-protection'
 
 // A code fence, as CommonMark defines it: three or more backticks or tildes,
@@ -140,11 +145,11 @@ function sectionLines(lines, heading) {
   return next === -1 ? rest : rest.slice(0, next)
 }
 
-// Not every OASB scenario carries a MITRE ATLAS reference, so the README gives
-// the mapped count instead of calling the whole suite mapped, and the parts it
-// names add up to the suite size it states.
+// Not every OASB scenario carries a MITRE ATLAS reference, so docs/benchmark.md
+// gives the mapped count instead of calling the whole suite mapped, and the
+// parts it names add up to the suite size it states.
 test('the Benchmark section gives how many OASB scenarios map to MITRE ATLAS', () => {
-  const text = sectionLines(readme, '## Benchmark').join(' ').replace(/\s+/g, ' ')
+  const text = sectionLines(benchmarkPage, '## Benchmark').join(' ').replace(/\s+/g, ' ')
   assert.doesNotMatch(text, /scenarios mapped to MITRE ATLAS/)
   const suite = /a suite of (\d+) standardized/.exec(text)
   assert.ok(suite, 'the section does not state the suite size')
@@ -160,13 +165,13 @@ test('the Benchmark section gives how many OASB scenarios map to MITRE ATLAS', (
 })
 
 test('the Benchmark section states any passing count its caveats refer to', () => {
-  const benchmark = sectionText(readme, '## Benchmark')
+  const benchmark = sectionText(benchmarkPage, '## Benchmark')
   if (!/passing count/i.test(benchmark)) return
   assert.match(benchmark, /\b\d+ of \d+\b/, 'the section refers to a passing count it does not state')
 })
 
 test('the Benchmark network caveat names the polling network monitor, not network detection as a whole', () => {
-  const benchmark = sectionText(readme, '## Benchmark')
+  const benchmark = sectionText(benchmarkPage, '## Benchmark')
   assert.match(benchmark, /polling network monitor/, 'the caveat does not name the polling network monitor')
   assert.match(benchmark, /network interceptor is exercised/, 'the caveat does not say the interceptor path is tested')
 })
@@ -1203,13 +1208,16 @@ test('the file probe gives up on a watcher after sixty files and about thirty se
 // call on the CommonJS `fs` module object. It also read as if the monitor
 // reported every change, and on a loaded machine the watcher once dropped the
 // event for the probe's new file. When the monitor reports these operations
-// differently, change these lists and the section together.
+// differently, change these lists, the section and the File operations section
+// of docs/runtime-monitoring.md together. The README keeps the first sentence of
+// that account and links the page for the rest.
 //
 // The first probe waits on a watcher three times, for its two fences and its
 // new file, each for up to thirty seconds. So it gets 120 seconds, not the 30
 // a documented command gets by default, and the test 160 seconds, was 90.
 test('the Runtime monitoring section says which file operations the monitor reports', { timeout: 160_000 }, async () => {
   const section = sectionText(readme, '## Runtime monitoring')
+  const page = sectionText(runtimePage, '## File operations')
 
   assert.deepEqual(await runAsDocumented(`node -e '${FILE_PROBE}'`, { timeout: 120_000 }), [
     'default, write a new file: reported',
@@ -1237,10 +1245,14 @@ test('the Runtime monitoring section says which file operations the monitor repo
     'ES module, readFile through a named import: not reported',
   ])
 
-  assert.doesNotMatch(section, /file access/i)
-  assert.doesNotMatch(section, /made through `fs\.readFile` or `fs\.readFileSync`/)
+  for (const text of [section, page]) {
+    assert.doesNotMatch(text, /file access/i)
+    assert.doesNotMatch(text, /made through `fs\.readFile` or `fs\.readFileSync`/)
+  }
+  for (const claim of ['file changes under the working directory', 'File reads are not monitored by default.']) {
+    assert.ok(section.includes(claim), `the Runtime monitoring section does not say: ${claim}`)
+  }
   for (const claim of [
-    'file changes under the working directory',
     'File reads are not monitored by default.',
     'A change can go unreported as well: on a loaded machine, `fs.watch` can drop the event for a new file and still report a file written after it.',
     'reports reads of a fixed list of sensitive paths',
@@ -1255,6 +1267,6 @@ test('the Runtime monitoring section says which file operations the monitor repo
     'which takes in the files under that directory and a path beside it such as `.opena2a/arp-old/.env`',
     'and one made in a worker thread, which has an `fs` module object of its own.',
   ]) {
-    assert.ok(section.includes(claim), `the Runtime monitoring section does not say: ${claim}`)
+    assert.ok(page.includes(claim), `the File operations section of docs/runtime-monitoring.md does not say: ${claim}`)
   }
 })

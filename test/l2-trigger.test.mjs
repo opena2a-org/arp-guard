@@ -1,4 +1,5 @@
-// Guards the README's account of when the intelligence stack calls L2.
+// Guards the account in docs/how-it-works.md, which the README links, of when
+// the intelligence stack calls L2.
 //
 // The README once said L2 runs only when L1 flags an event. The engine has no
 // such check: any event not classified `normal`, at or above
@@ -7,9 +8,9 @@
 // On a machine with a model key exported, L2 is an outbound call, so the
 // trigger a reader is told is a privacy claim, not a detail.
 //
-// These tests pin the trigger in the engine and the words in the README to each
-// other: if the engine starts to require an L1 flag, the engine tests fail and
-// the README has to change with it.
+// These tests pin the trigger in the engine and the words in docs/how-it-works.md
+// to each other: if the engine starts to require an L1 flag, the engine tests
+// fail and that page has to change with it.
 //
 // Run against the BUILT output, because that is what ships. The adapter is a
 // stand-in that records its calls, so nothing leaves the machine.
@@ -23,7 +24,7 @@ import { join } from 'node:path'
 
 const require = createRequire(import.meta.url)
 const arp = require('../dist/index.js')
-const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+const howItWorks = readFileSync(new URL('../docs/how-it-works.md', import.meta.url), 'utf8')
 
 const ASSESSMENT = 'CONSISTENT: NO\nCONFIDENCE: 0.5\nREASONING: test\nACTION: ALERT'
 
@@ -112,13 +113,13 @@ test('an event below intelligence.minSeverityForLlm does not go to L2', async (t
 // The `## Intelligence Stack` section, with line breaks and runs of spaces read
 // as one space, so a rewrap does not fail the check.
 function intelligenceSection() {
-  const start = readme.indexOf('\n## Intelligence Stack\n')
-  assert.ok(start >= 0, 'the README has no Intelligence Stack section')
-  const end = readme.indexOf('\n## ', start + 1)
-  return readme.slice(start, end === -1 ? undefined : end).replace(/\s+/g, ' ')
+  const start = howItWorks.indexOf('\n## Intelligence Stack\n')
+  assert.ok(start >= 0, 'docs/how-it-works.md has no Intelligence Stack section')
+  const end = howItWorks.indexOf('\n## ', start + 1)
+  return howItWorks.slice(start, end === -1 ? undefined : end).replace(/\s+/g, ' ')
 }
 
-test('the README names the trigger the engine uses for L2, with its defaults', () => {
+test('docs/how-it-works.md names the trigger the engine uses for L2, with its defaults', () => {
   const section = intelligenceSection()
   const { minSeverityForLlm, budgetUsd, maxCallsPerHour } = arp.defaultConfig().intelligence
   for (const claim of [
@@ -130,6 +131,6 @@ test('the README names the trigger the engine uses for L2, with its defaults', (
   ]) {
     assert.ok(section.includes(claim), `the Intelligence Stack section does not say: ${claim}`)
   }
-  assert.doesNotMatch(section, /only when L1 flags/, 'the README says L2 waits for an L1 flag, which the engine does not')
-  assert.doesNotMatch(section, /ambiguous events/, 'the README says L2 is for ambiguous events, which the engine does not check')
+  assert.doesNotMatch(section, /only when L1 flags/, 'docs/how-it-works.md says L2 waits for an L1 flag, which the engine does not')
+  assert.doesNotMatch(section, /ambiguous events/, 'docs/how-it-works.md says L2 is for ambiguous events, which the engine does not check')
 })
