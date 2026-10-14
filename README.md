@@ -27,16 +27,15 @@ PI-001 critical "Ignore all previous instructions"
 DE-001 high     "reveal your system prompt"
 ```
 
-`main` prints these two lines, and a test runs the block against the build to keep them in step. A fresh install of the published 0.3.0 on 2026-10-09 printed the same two lines from the same block with the package's earlier name, `arp-guard`, in both places; it resolved `hackmyagent@0.33.2`, and a later install can resolve another release in 0.3.0's `>=0.11.0` range. Before you start the runtime monitor in [Runtime monitoring](#runtime-monitoring), read the next section: it covers what the monitor sends off the machine by default.
+`main` prints these two lines, and a test runs the block against the build to keep them in step. Before you start the runtime monitor in [Runtime monitoring](#runtime-monitoring), read the next section: it covers what the monitor sends off the machine by default.
 
 ## What `npm install` delivers today
 
-This README describes `main`, which is not yet published. `agent-runtime-protection` is the package's name from 0.4.0, the release `main` becomes, and that name has no release on npm until 0.4.0 is published. The release on npm today is 0.3.0, published 2026-03-23 as `arp-guard` (see [Renamed from arp-guard](#renamed-from-arp-guard)), and it differs from `main` in two ways that matter.
+This README describes `main`, which is not yet published: `agent-runtime-protection` has no release on npm yet, and the release on npm is published as `arp-guard` ([Renamed from arp-guard](#renamed-from-arp-guard)). [docs/install.md](docs/install.md#what-npm-install-delivers-today) says how that release differs from `main` and what the Quick Start block prints on it.
 
-- 0.3.0 depends on `hackmyagent` (`>=0.11.0`), not on `@opena2a/aim-sdk` directly. A fresh install on 2026-10-09 resolved `hackmyagent@0.33.2`, which pins `@opena2a/aim-sdk@1.3.1`, and that SDK's `arp` module is the engine 0.3.0 runs. An install that locked `hackmyagent@0.32.0` holds `@opena2a/aim-sdk@1.0.2` instead. The Architecture section below describes `main`, not 0.3.0.
-- In that engine, L2 is on by default and its default adapter picks a destination from the environment: `ANTHROPIC_API_KEY` if set, otherwise `OPENAI_API_KEY`, otherwise a local Ollama at `localhost:11434`. On a machine that exports one of those keys, qualifying events, including the first 100 characters of a child process command line, are sent to that vendor, authenticated with your own key and billed to your own account. This is the default the [`@opena2a/aim-sdk` changelog](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/CHANGELOG.md) describes; it is in every published version of that SDK, 1.0.0 through 1.3.1, and it applies to the Runtime monitoring example below as written, because a config with no `intelligence` block is read as on.
+In that release and on `main`, L2 is on by default and its default adapter picks a destination from the environment: `ANTHROPIC_API_KEY` if set, otherwise `OPENAI_API_KEY`, otherwise a local Ollama at `localhost:11434`.
 
-To stop it on 0.3.0, pass `intelligence: { enabled: false }` in the constructor config:
+On a machine that exports one of those keys, qualifying events, including the first 100 characters of a child process command line, are sent to that vendor, authenticated with your own key and billed to your own account. To stop it, pass `intelligence: { enabled: false }` in the constructor config:
 
 ```typescript
 const arp = new AgentRuntimeProtection({
@@ -45,15 +44,11 @@ const arp = new AgentRuntimeProtection({
 });
 ```
 
-This was measured to stop the outbound call on `@opena2a/aim-sdk@1.3.1`, the version a fresh install of 0.3.0 resolves; in 1.0.2, the gate it switches is the same code. It also switches off the in-process behavioral twin, which reads the same flag; L0 rules and the L1 statistical detection keep running. To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
-
-`main` currently pins an SDK that carries the same L2 default; the Intelligence stack section below describes it.
+It also switches off the in-process behavioral twin, which reads the same flag; L0 rules and the L1 statistical detection keep running. To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
 
 ## Renamed from arp-guard
 
-This package was published as `arp-guard` up to 0.3.0. From 0.4.0 it is `agent-runtime-protection`. `arp-guard` 0.4.0 is a shim that re-exports this package, and it is deprecated.
-
-To move, install `agent-runtime-protection` in place of `arp-guard` and change the import specifier. Nothing else changes: at 0.4.0 both names export the same API. What differs between 0.3.0 and 0.4.0 is in the section above.
+`arp-guard` is this package's earlier name. On `main` it is a deprecated shim that re-exports this package. To move, install `agent-runtime-protection` in place of `arp-guard` and change the import specifier; [docs/install.md](docs/install.md#renamed-from-arp-guard) gives the release numbers.
 
 ```diff
 -import { AgentRuntimeProtection } from 'arp-guard';
@@ -74,7 +69,7 @@ await arp.start();
 await arp.stop();
 ```
 
-`start()` runs the process, network and filesystem monitors. It does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls. Setting `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` to `{ enabled: true }` adds an interceptor to `getStatus()` that nothing calls. Make your own on the monitor's event engine, start it, and call it where the agent sends and receives that traffic:
+`start()` runs the process, network and filesystem monitors. It does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls. Make your own on the monitor's event engine, start it, and call it where the agent sends and receives that traffic:
 
 ```bash
 node -e "
@@ -96,9 +91,9 @@ prompt critical [PI-001] Instruction override attempt — direct override of sys
 prompt high     [DE-001] System prompt extraction — attempting to extract system instructions
 ```
 
-Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply. For MCP tool calls, `new MCPProtocolInterceptor(arp.getEngine(), allowedTools)` has `scanToolCall(toolName, args)`; for A2A messages, `new A2AProtocolInterceptor(arp.getEngine(), trustedAgents)` has `scanMessage(from, to, content)`. An interceptor scans nothing until its own `start()`. Each call returns the matches and emits an event for each one, which `arp.onEvent` handlers and the alert rules receive. `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](#intelligence-stack) describes.
+Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply. An interceptor scans nothing until its own `start()`. `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](docs/how-it-works.md#intelligence-stack) describes. The MCP and A2A interceptors are in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#ai-layer-interceptors).
 
-File reads are not monitored by default. The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read. A change can go unreported as well: on a loaded machine, `fs.watch` can drop the event for a new file and still report a file written after it. With `interceptors: { filesystem: { enabled: true } }` in the config, ARP also reports reads of a fixed list of sensitive paths (`.ssh`, `.aws`, `.env` and others) made by calling `readFile` or `readFileSync` on the CommonJS `fs` module object between `start()` and `stop()`. `require('fs')` returns that object, and an ES module gets it as the default import (`import fs from 'node:fs'`). A read is not reported when it goes through a reference to either function taken before `start()`, such as `const { readFileSync } = require('fs')`; through an ES module named or namespace import (`import { readFileSync } from 'node:fs'`, `import * as fs from 'node:fs'`) bound before `start()`, as a static import in the module that calls `start()` is; or through `fs.promises`, a stream or `fs.open`. A read of any other path is not reported either. Nor are two reads of a listed path: one of a path that starts with the path of ARP's data directory (`dataDir` in the config, by default `.opena2a/arp` under the working directory), which takes in the files under that directory and a path beside it such as `.opena2a/arp-old/.env`; and one made in a worker thread, which has an `fs` module object of its own.
+File reads are not monitored by default. The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read. Which reads the opt-in filesystem interceptor reports, and which changes `fs.watch` can miss, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#file-operations).
 
 ## AI-Layer Scanning
 
@@ -111,61 +106,15 @@ if (result.detected) {
 }
 ```
 
-Detects prompt injection, jailbreaks, data exfiltration, MCP exploitation, and A2A identity spoofing across 20 patterns in 7 categories.
+Detects prompt injection, jailbreaks, data exfiltration, MCP exploitation, and A2A identity spoofing. How many patterns `ALL_PATTERNS` holds, and in how many categories, is in [docs/how-it-works.md](docs/how-it-works.md#ai-layer-patterns).
 
-## Intelligence Stack
+## Documentation
 
-| Layer | Cost | Coverage |
-|-------|------|----------|
-| L0: Rules | Free | Pattern matching on every event |
-| L1: Statistical | Free | Z-score anomaly detection |
-| L2: LLM-Assisted | Budget-controlled | Micro-prompts for events not classified `normal` |
-
-An event qualifies for L2 when it is not classified `normal`, its severity is at or above
-`intelligence.minSeverityForLlm` (default `medium`), and the budget allows it. L1 does not
-have to flag the event: one a monitor already classified, such as `Suspicious binary
-executed` (violation, high), qualifies from the first event, before L1 has a baseline.
-Default budget: $5/month (`intelligence.budgetUsd`) and 20 calls per hour
-(`intelligence.maxCallsPerHour`). To send fewer events, raise
-`intelligence.minSeverityForLlm` to `high` or `critical`.
-
-L2 is on by default, and the default adapter picks its destination from the environment:
-`ANTHROPIC_API_KEY` if set, otherwise `OPENAI_API_KEY`, otherwise a local Ollama at
-`localhost:11434`. On a machine that already exports a model key, qualifying events are
-sent to that vendor with the agent context and the event, which for a process event
-includes the command line. Set `intelligence.enabled: false` to run on L0 and L1 alone
-with no outbound calls, or `intelligence.adapter: ollama` to keep inference local.
-
-## Architecture
-
-The runtime engine lives in the AIM agent-side SDK, at `@opena2a/aim-sdk/arp`. The
-product boundary is by time: scan at rest with HackMyAgent, protect at runtime with ARP.
-
-On `main`, this package re-exports that module directly, on an exact SDK pin, so installing it no longer pulls in the scanner or its model runtime. The published 0.3.0 does not do this yet: it resolves the engine through `hackmyagent`, as described at the top of this file. Importing `@opena2a/aim-sdk/arp` yourself gets you the same engine; use this package when you want ARP as a standalone dependency.
-
-## Benchmark
-
-[OASB](https://github.com/opena2a-org/oasb) is a suite of 222 standardized test scenarios,
-and it ships ARP as its reference adapter. No OASB run against this package's engine is
-recorded here yet, so 222 is the number of scenarios, not the number that pass.
-
-Three caveats for reading an OASB result as coverage of this package, all verifiable from
-a clean OASB checkout:
-
-- Not every scenario maps to MITRE ATLAS. In OASB 0.4.0, 193 of the 222 sit in test
-  files that carry an ATLAS reference: 165 in files that name a technique and 28 in
-  files that name only a tactic. The other 29, in seven files, test baselines,
-  correlation and the L0/L2 plumbing rather than an attack. To list those files:
-  `find src/atomic src/integration src/baseline src/e2e -name '*.test.ts' -exec grep -L 'AML\.T' {} +`
-- The polling network monitor, the one the [Runtime monitoring](#runtime-monitoring)
-  example starts, has no running test. OASB skips `E2E-003` (live network detection)
-  pending a reliable cross-platform check, and its five atomic network tests turn that
-  monitor off and inject pre-classified events
-  (`grep -c "network: false" src/atomic/network/*.test.ts`). Detection through the
-  opt-in network interceptor is exercised, by `E2E-005`.
-- The suite resolves ARP through an older `hackmyagent` that carries its own
-  pre-migration copy of the runtime engine. Re-point it at `@opena2a/aim-sdk/arp`
-  before reading the result as coverage of what this package ships today.
+- [Install](docs/install.md): what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`
+- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, and which file operations the monitor reports
+- [How it works](docs/how-it-works.md): when the intelligence stack sends an event to L2, its defaults, and where the engine lives
+- [Benchmark](docs/benchmark.md): OASB, and how to read its results as coverage of this package
+- [Status](STATUS.md) and [Changelog](CHANGELOG.md)
 
 ## License
 
