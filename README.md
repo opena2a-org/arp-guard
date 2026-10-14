@@ -1,13 +1,13 @@
-> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [Secretless](https://github.com/opena2a-org/secretless-ai) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [ABG](https://github.com/opena2a-org/AI-BrowserGuard) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Agent Runtime Protection](https://github.com/opena2a-org/agent-runtime-protection) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
-
 # Agent Runtime Protection (ARP)
 
-[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](./STATUS.md)
-[![npm](https://img.shields.io/npm/v/agent-runtime-protection)](https://www.npmjs.com/package/agent-runtime-protection)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![OASB](https://img.shields.io/badge/OASB-reference%20adapter-blue)](https://github.com/opena2a-org/oasb)
+[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](STATUS.md)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-EDR for AI agents. Monitors agent processes, network and filesystem, and scans the AI-layer traffic the agent passes to it — prompts, MCP tool calls, A2A messages — then detects and enforces, across three layers: rule-based, statistical, and LLM-assisted. Published as `arp-guard` up to 0.3.0: see [Renamed from arp-guard](#renamed-from-arp-guard).
+> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+
+[Website](https://opena2a.org) · [Discord](https://discord.gg/uRZa3KXgEn)
+
+EDR for AI agents. Monitors agent processes, network and filesystem, and scans the AI-layer traffic the agent passes to it (prompts, MCP tool calls, A2A messages), then detects and enforces, across three layers: rule-based, statistical, and LLM-assisted.
 
 ## Quick Start
 
