@@ -134,6 +134,21 @@ test('Quick Start is the first section and the caveat section follows it', () =>
   assert.equal(second, '## What `npm install` delivers today')
 })
 
+// A release number or a date in the README goes stale with the next release.
+// They live on the pages the README links, beside the passage they qualify:
+// docs/install.md gives the last release published under the earlier name.
+const VERSION_OR_DATE = /v?[0-9]+\.[0-9]+\.[0-9]+|20[0-9]{2}-[0-9]{2}-[0-9]{2}/
+
+test('the README names no release number and no date', () => {
+  const found = readme.flatMap((line, i) => (VERSION_OR_DATE.test(line) ? [`line ${i + 1}: ${line}`] : []))
+  assert.deepEqual(found, [])
+})
+
+test('docs/install.md gives the last release published as arp-guard', () => {
+  const page = readFileSync(join(root, 'docs', 'install.md'), 'utf8').split('\n')
+  assert.match(sectionText(page, '## Renamed from arp-guard'), /published as `arp-guard` up to \d+\.\d+\.\d+\./)
+})
+
 // The lines from a `## ` heading up to the next one, skipping `## ` lines inside
 // fenced code blocks the way sections() does.
 function sectionLines(lines, heading) {
