@@ -7,6 +7,7 @@ This file starts at 0.4.0 and, for that release, lists the rename only.
 ### Changed
 
 - The README is shortened to the install line, the first call and its output, the runtime-monitoring and AI-layer scanning examples, and links. Its reference text moved, as written, to `docs/install.md` (what the release on npm delivers, and the rename from `arp-guard`), `docs/runtime-monitoring.md` (the MCP and A2A interceptors, and which file operations the monitor reports), `docs/how-it-works.md` (the intelligence stack, the architecture, and the pattern count) and `docs/benchmark.md` (OASB).
+- The README's longer paragraphs are split at sentence breaks into shorter ones. No text is added, removed or moved to another page.
 
 ## 0.4.0
 
