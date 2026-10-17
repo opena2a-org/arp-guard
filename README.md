@@ -52,13 +52,17 @@ const arp = new AgentRuntimeProtection({
 
 It also switches off the in-process behavioral twin, which reads the same flag; L0 rules and the L1 statistical detection keep running.
 
-The value must be the boolean `false`. A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
+The value must be the boolean `false`.
+
+A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
 
 To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
 
 ## Renamed from arp-guard
 
-`arp-guard` is this package's earlier name. On `main` it is a deprecated shim that re-exports this package.
+`arp-guard` is this package's earlier name.
+
+On `main` it is a deprecated shim that re-exports this package.
 
 To move, install `agent-runtime-protection` in place of `arp-guard` and change the import specifier; [docs/install.md](docs/install.md#renamed-from-arp-guard) gives the release numbers.
 
@@ -84,7 +88,9 @@ await arp.stop();
 
 `start()` runs the process, network and filesystem monitors.
 
-The process monitor reads the process table with `ps` every `monitors.process.intervalMs` milliseconds, 5000 by default, and reports a child process it finds on one poll and not on the one before. A child that starts and exits between two polls is not reported.
+The process monitor reads the process table with `ps` every `monitors.process.intervalMs` milliseconds, 5000 by default, and reports a child process it finds on one poll and not on the one before.
+
+A child that starts and exits between two polls is not reported.
 
 `start()` does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls.
 
@@ -110,7 +116,9 @@ prompt critical [PI-001] Instruction override attempt — direct override of sys
 prompt high     [DE-001] System prompt extraction — attempting to extract system instructions
 ```
 
-Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply. An interceptor scans nothing until its own `start()`.
+Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply.
+
+An interceptor scans nothing until its own `start()`.
 
 `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](docs/how-it-works.md#intelligence-stack) describes.
 
@@ -120,7 +128,9 @@ Each match is then checked against the default rules: PI-001, at `critical`, get
 
 The MCP and A2A interceptors are in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#ai-layer-interceptors).
 
-File reads are not monitored by default. The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read.
+File reads are not monitored by default.
+
+The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read.
 
 Which reads the opt-in filesystem interceptor reports, and which changes `fs.watch` can miss, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#file-operations).
 
@@ -145,9 +155,13 @@ if (result.detected) {
 }
 ```
 
-The other sets in `PATTERN_SETS` are `mcpPatterns` for MCP tool-call arguments, which the `MCPProtocolInterceptor` applies, `a2aPatterns` for A2A messages, which the `A2AProtocolInterceptor` applies, and `outputPatterns` for model replies; `ALL_PATTERNS` is the union of all of them, and in ordinary prose it reports backtick spans, `../` and privilege words.
+The other sets in `PATTERN_SETS` are `mcpPatterns` for MCP tool-call arguments, which the `MCPProtocolInterceptor` applies, `a2aPatterns` for A2A messages, which the `A2AProtocolInterceptor` applies, and `outputPatterns` for model replies.
 
-The AI-layer scanner matches text against 20 regular expressions in 7 categories: prompt injection, jailbreak, data exfiltration, output leak, context manipulation, MCP exploitation and A2A attack. How many entries of an attack corpus the input set and the two interceptors detect, and the command that measures it, is in [docs/how-it-works.md](docs/how-it-works.md#ai-layer-patterns).
+`ALL_PATTERNS` is the union of all of them, and in ordinary prose it reports backtick spans, `../` and privilege words.
+
+The AI-layer scanner matches text against 20 regular expressions in 7 categories: prompt injection, jailbreak, data exfiltration, output leak, context manipulation, MCP exploitation and A2A attack.
+
+How many entries of an attack corpus the input set and the two interceptors detect, and the command that measures it, is in [docs/how-it-works.md](docs/how-it-works.md#ai-layer-patterns).
 
 ## Engine version
 
@@ -158,7 +172,7 @@ This package's own version is in its `package.json`, which `require('agent-runti
 ## Documentation
 
 - [Install](docs/install.md): what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`
-- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, which file operations the monitor reports, how it sees process spawns, what the default rules do, and which files ARP writes
+- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, file operations, process spawns, the default rules, and the files ARP writes
 - [How it works](docs/how-it-works.md): when the intelligence stack sends an event to L2, its defaults, and where the engine lives
 - [Benchmark](docs/benchmark.md): OASB, and how to read its results as coverage of this package
 - [Status](STATUS.md) and [Changelog](CHANGELOG.md)
