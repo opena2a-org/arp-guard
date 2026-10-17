@@ -10,7 +10,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { runAsDocumented } from './run-as-documented.mjs'
 
 const require = createRequire(import.meta.url)
 const arp = require('../dist/index.js')
@@ -59,6 +61,24 @@ test('scanText detects a known injection payload', () => {
   assert.ok(result.matches.length > 0, 'detected with no matches')
   // Guards the shape the README documents: matches carry a pattern with an id.
   assert.equal(typeof result.matches[0].pattern.id, 'string')
+})
+
+// `VERSION` reaches this package through the re-export, so it is the engine's
+// version, not this package's. A new-user pass read it as this package's own,
+// and nothing said otherwise. The README says which it is, and how to read this
+// package's own version, which the second check reads the way an install does.
+test('VERSION is the version of the engine, and the README says so', async () => {
+  assert.equal(arp.VERSION, require('@opena2a/aim-sdk/package.json').version)
+  const printed = await runAsDocumented(`node -e "console.log(require('agent-runtime-protection/package.json').version)"`)
+  assert.deepEqual(printed, [require('../package.json').version])
+
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(/\s+/g, ' ')
+  for (const claim of [
+    'This package re-exports the engine, `@opena2a/aim-sdk/arp`, so the `VERSION` it exports is the version of `@opena2a/aim-sdk`, not of this package.',
+    "This package's own version is in its `package.json`, which `require('agent-runtime-protection/package.json')` reads.",
+  ]) {
+    assert.ok(readme.includes(claim), `the README does not say: ${claim}`)
+  }
 })
 
 test('the engine constructs', () => {

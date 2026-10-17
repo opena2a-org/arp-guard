@@ -114,6 +114,10 @@ Call `scanInput` on what the agent sends to a model and `scanOutput` on the repl
 
 `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](docs/how-it-works.md#intelligence-stack) describes.
 
+Each match is then checked against the default rules: PI-001, at `critical`, gets an `alert` and a `kill`, which finds no process to stop for a prompt and is logged as failed, and DE-001, at `high`, an `alert`.
+
+[Default rules](docs/runtime-monitoring.md#default-rules) gives the action each rule takes, by severity.
+
 The MCP and A2A interceptors are in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#ai-layer-interceptors).
 
 File reads are not monitored by default. The filesystem monitor watches the working directory with `fs.watch`, which sees files change but never sees one read.
@@ -123,6 +127,12 @@ Which reads the opt-in filesystem interceptor reports, and which changes `fs.wat
 Process spawns are reported when they are made only with `interceptors: { process: { enabled: true } }`, which hooks `child_process` between `start()` and `stop()`.
 
 Which calls that interceptor reports, with an example and its output, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#process-spawns).
+
+ARP keeps its event and enforcement logs in `.opena2a/arp` under the working directory by default, and the constructor creates that directory.
+
+While the behavioral twin is on, as it is in the first example, it also logs each event after `start()` to `.opena2a/arp/events.jsonl` under your home directory.
+
+Each file ARP writes, and how to turn the twin off, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#files-arp-writes).
 
 ## AI-Layer Scanning
 
@@ -139,10 +149,16 @@ The other sets in `PATTERN_SETS` are `mcpPatterns` for MCP tool-call arguments, 
 
 The AI-layer scanner matches text against 20 regular expressions in 7 categories: prompt injection, jailbreak, data exfiltration, output leak, context manipulation, MCP exploitation and A2A attack. How many entries of an attack corpus the input set and the two interceptors detect, and the command that measures it, is in [docs/how-it-works.md](docs/how-it-works.md#ai-layer-patterns).
 
+## Engine version
+
+This package re-exports the engine, `@opena2a/aim-sdk/arp`, so the `VERSION` it exports is the version of `@opena2a/aim-sdk`, not of this package.
+
+This package's own version is in its `package.json`, which `require('agent-runtime-protection/package.json')` reads.
+
 ## Documentation
 
 - [Install](docs/install.md): what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`
-- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, which file operations the monitor reports, and how it sees process spawns
+- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, which file operations the monitor reports, how it sees process spawns, what the default rules do, and which files ARP writes
 - [How it works](docs/how-it-works.md): when the intelligence stack sends an event to L2, its defaults, and where the engine lives
 - [Benchmark](docs/benchmark.md): OASB, and how to read its results as coverage of this package
 - [Status](STATUS.md) and [Changelog](CHANGELOG.md)
