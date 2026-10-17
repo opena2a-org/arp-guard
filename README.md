@@ -74,14 +74,17 @@ const arp = new AgentRuntimeProtection({ agentName: 'my-agent' });
 await arp.start();
 
 // Agent runs normally — ARP monitors in background
-// Process spawns, network connections and file changes under the working directory are monitored
+// Child processes are found by polling `ps` every 5 s, so one that starts and exits between two polls is not reported
+// Network connections and file changes under the working directory are monitored
 
 await arp.stop();
 ```
 
 `start()` runs the process, network and filesystem monitors.
 
-It does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls.
+The process monitor reads the process table with `ps` every `monitors.process.intervalMs` milliseconds, 5000 by default, and reports a child process it finds on one poll and not on the one before. A child that starts and exits between two polls is not reported.
+
+`start()` does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls.
 
 Make your own on the monitor's event engine, start it, and call it where the agent sends and receives that traffic:
 
@@ -115,6 +118,10 @@ File reads are not monitored by default. The filesystem monitor watches the work
 
 Which reads the opt-in filesystem interceptor reports, and which changes `fs.watch` can miss, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#file-operations).
 
+Process spawns are reported when they are made only with `interceptors: { process: { enabled: true } }`, which hooks `child_process` between `start()` and `stop()`.
+
+Which calls that interceptor reports, with an example and its output, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#process-spawns).
+
 ## AI-Layer Scanning
 
 ```typescript
@@ -133,7 +140,7 @@ The AI-layer scanner matches text against 20 regular expressions in 7 categories
 ## Documentation
 
 - [Install](docs/install.md): what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`
-- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, and which file operations the monitor reports
+- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, which file operations the monitor reports, and how it sees process spawns
 - [How it works](docs/how-it-works.md): when the intelligence stack sends an event to L2, its defaults, and where the engine lives
 - [Benchmark](docs/benchmark.md): OASB, and how to read its results as coverage of this package
 - [Status](STATUS.md) and [Changelog](CHANGELOG.md)
