@@ -24,6 +24,8 @@ const arp = new AgentRuntimeProtection({
 
 This was measured to stop the outbound call on `@opena2a/aim-sdk@1.3.1`, the version a fresh install of 0.3.0 resolves; in 1.0.2, the gate it switches is the same code. It also switches off the in-process behavioral twin, which reads the same flag; L0 rules and the L1 statistical detection keep running. To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
 
+The value must be the boolean `false`. A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
+
 `main` currently pins an SDK that carries the same L2 default; the [Intelligence stack](how-it-works.md#intelligence-stack) section describes it.
 
 ## Renamed from arp-guard

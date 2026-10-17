@@ -52,6 +52,8 @@ const arp = new AgentRuntimeProtection({
 
 It also switches off the in-process behavioral twin, which reads the same flag; L0 rules and the L1 statistical detection keep running.
 
+The value must be the boolean `false`. A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
+
 To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
 
 ## Renamed from arp-guard
