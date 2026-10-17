@@ -157,12 +157,13 @@ test('docs/install.md gives the last release published as arp-guard', () => {
 
 // The package of each `npm install`, and of each `require` and `import` that is
 // not a Node built-in, in code blocks and inline code alike: a reader pastes
-// from both.
+// from both. A sentence that tells the reader to install a package names it in
+// inline code after the word, as in "install `name` in place of".
 function packagesNamed(lines) {
   const named = new Set()
-  const forms = /npm install ([^\s`]+)|require\((['"])(.+?)\2\)|from (['"])(.+?)\4/g
-  for (const [, installed, , required, , imported] of lines.join('\n').matchAll(forms)) {
-    const specifier = installed ?? required ?? imported
+  const forms = /npm install ([^\s`]+)|require\((['"])(.+?)\2\)|from (['"])(.+?)\4|\b[Ii]nstall `([^\s`]+)`/g
+  for (const [, installed, , required, , imported, told] of lines.join('\n').matchAll(forms)) {
+    const specifier = installed ?? required ?? imported ?? told
     if (isBuiltin(specifier)) continue
     named.add(specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/'))
   }
@@ -183,6 +184,15 @@ test('the packages a page installs and imports are read from code blocks and inl
   assert.deepEqual(packagesNamed(lines), ['@scope/other', 'one-package', 'third'])
 })
 
+test('a sentence that tells a reader to install a package names that package', () => {
+  const lines = [
+    'To move, install `prose-package` in place of `old-package`.',
+    'Install `first-package` before you start.',
+    'The README installs `described-package`.',
+  ]
+  assert.deepEqual(packagesNamed(lines), ['first-package', 'prose-package'])
+})
+
 // docs/install.md gives the name the release on npm is published under. The
 // README, and docs/runtime-monitoring.md, whose examples the README links,
 // install and import that name and no other, so what a reader pastes from them
@@ -193,6 +203,15 @@ test('the README and docs/runtime-monitoring.md install and import the name the 
   assert.equal(published?.[1], PUBLISHED, 'docs/install.md gives another name for the release on npm')
   assert.deepEqual(packagesNamed(readme), [PUBLISHED], 'the README installs or imports another name')
   assert.deepEqual(packagesNamed(runtimePage), [PUBLISHED], 'docs/runtime-monitoring.md installs or imports another name')
+})
+
+// docs/install.md is the page the README sends a reader to for the release on
+// npm and for the rename from arp-guard. While its Renamed from arp-guard
+// section told the reader to install `agent-runtime-protection` and import it,
+// the command it led to failed with a 404, as the Quick Start's did.
+test('docs/install.md installs and imports the name the release on npm has', () => {
+  const page = readFileSync(join(root, 'docs', 'install.md'), 'utf8').split('\n')
+  assert.deepEqual(packagesNamed(page), [PUBLISHED], 'docs/install.md installs or imports another name')
 })
 
 // The lines from a `## ` heading up to the next one, skipping `## ` lines inside

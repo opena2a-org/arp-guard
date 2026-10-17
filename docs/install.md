@@ -30,11 +30,12 @@ The value must be the boolean `false`. A string (`"false"`, `"no"`, `"0"`) or th
 
 ## Renamed from arp-guard
 
-This package was published as `arp-guard` up to 0.3.0. From 0.4.0 it is `agent-runtime-protection`. `arp-guard` 0.4.0 is a shim that re-exports this package, and it is deprecated.
+This package was published as `arp-guard` up to 0.3.0. On `main`, `package.json` names it `agent-runtime-protection` at 0.4.0, and `shim/arp-guard` holds an `arp-guard` 0.4.0 that re-exports it, so an import of `arp-guard` gets the same exports.
 
-To move, install `agent-runtime-protection` in place of `arp-guard` and change the import specifier. Nothing else changes: at 0.4.0 both names export the same API. What differs between 0.3.0 and 0.4.0 is in the section above.
+Neither name has a 0.4.0 on npm. On 2026-10-17, `npm view agent-runtime-protection version` failed with E404, and `npm view arp-guard versions` listed 0.3.0 alone. Install and import `arp-guard`, as the [README](../README.md#quick-start) does:
 
-```diff
--import { AgentRuntimeProtection } from 'arp-guard';
-+import { AgentRuntimeProtection } from 'agent-runtime-protection';
+```bash
+npm install arp-guard
 ```
+
+What differs between 0.3.0 and `main` is in the section above.
