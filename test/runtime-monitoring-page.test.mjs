@@ -6,8 +6,9 @@
 // logged in enforcement.jsonl as a `kill` with no process to kill, and no page
 // said what the default rules do. The README and the page named only the data
 // directory, while the behavioral twin also logs events under the home
-// directory. And the page said which reads the interceptor reports, while it
-// also reports writes.
+// directory, and the page left out the files the two logs in the data
+// directory are renamed to once they are larger than 50 MiB. And the page said
+// which reads the interceptor reports, while it also reports writes.
 //
 // Each account is measured against the BUILT package by a probe that runs in
 // its own process, the way the README's commands run. A probe sets HOME to a
@@ -521,6 +522,74 @@ test('the Files ARP writes section names the data directory and the twin log und
     'ARP keeps its event and enforcement logs in `.opena2a/arp` under the working directory by default, and the constructor creates that directory.',
     'While the behavioral twin is on, as it is in the first example, it also logs each event after `start()` to `.opena2a/arp/events.jsonl` under your home directory.',
     'Each file ARP writes, and how to turn the twin off, is in [docs/runtime-monitoring.md](docs/runtime-monitoring.md#files-arp-writes).',
+  ])
+})
+
+// The two logs in the data directory at the size where ARP renames them. Each
+// event is a `violation` at `high`, which the default rules answer with one
+// `alert`, so it puts a line in each log: first with both logs set to 52428800
+// bytes, then twice with both set to 52428801. `fs.truncateSync` sets the size.
+// For each event: the files it added to the data directory, with a suffix of
+// digits shown as <ms> once it has been checked to be a time read during the
+// event, and where each log's line for it went. A log renamed twice in one
+// millisecond would get the same name both times, so each event waits until the
+// clock has passed the time read at the end of the event before it.
+const ROTATION_PROBE = String.raw`
+const logs = ["events.jsonl", "enforcement.jsonl"];
+const names = () => fs.readdirSync("data").sort();
+const after = (file, start) => {
+  const fd = fs.openSync(file, "r");
+  const text = Buffer.alloc(fs.fstatSync(fd).size - start);
+  fs.readSync(fd, text, 0, text.length, start);
+  fs.closeSync(fd);
+  return text.toString("utf8");
+};
+(async () => {
+  const arp = new AgentRuntimeProtection({ agentName: "my-agent", intelligence: { enabled: false }, monitors: off, dataDir: "data" });
+  await arp.start();
+  let last = 0;
+  const alerted = async (bytes) => {
+    for (const log of logs) fs.truncateSync(path.join("data", log), bytes);
+    while (Date.now() <= last) await tick();
+    const before = names();
+    const start = Date.now();
+    const { id } = await arp.getEngine().emit(event("process", "violation", "high"));
+    last = Date.now();
+    const added = names().filter((name) => !before.includes(name)).map((name) => {
+      const stamp = /^(?:events|enforcement)\.jsonl\.(\d+)$/.exec(name);
+      const timed = stamp && Number(stamp[1]) >= start && Number(stamp[1]) <= last;
+      return (timed ? name.replace(/\d+$/, "<ms>") : name) + " of " + fs.statSync(path.join("data", name)).size + " bytes";
+    });
+    const lines = logs.map((log) => {
+      const file = path.join("data", log);
+      const grown = fs.statSync(file).size > bytes;
+      const written = (grown ? after(file, bytes) : fs.readFileSync(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      const ours = written.length === 1 && [written[0].id, written[0].eventId].includes(id);
+      return log + (ours ? (grown ? " has the line appended" : " is a new file holding only the line") : " holds other lines");
+    });
+    return "with both logs at " + bytes + " bytes, an event added " + (added.join(" and ") || "no file") + "; " + lines.join("; ");
+  };
+  await arp.getEngine().emit(event("process", "violation", "high"));
+  for (const bytes of [52428800, 52428801, 52428801]) console.log(await alerted(bytes));
+  await arp.stop();
+  console.log("the data directory after stop(): " + names().map((name) => name.replace(/\.\d+$/, ".<ms>")).join(", "));
+})();
+`
+
+test('the Files ARP writes section names the files the two logs in the data directory are renamed to, and the size at which that happens', async () => {
+  const renamed =
+    'with both logs at 52428801 bytes, an event added enforcement.jsonl.<ms> of 52428801 bytes and events.jsonl.<ms> of 52428801 bytes; events.jsonl is a new file holding only the line; enforcement.jsonl is a new file holding only the line'
+  assert.deepEqual(await probe(ROTATION_PROBE), [
+    'with both logs at 52428800 bytes, an event added no file; events.jsonl has the line appended; enforcement.jsonl has the line appended',
+    renamed,
+    renamed,
+    'the data directory after stop(): enforcement.jsonl, enforcement.jsonl.<ms>, enforcement.jsonl.<ms>, events.jsonl, events.jsonl.<ms>, events.jsonl.<ms>',
+  ])
+
+  assertSays(sectionText(page, 'Files ARP writes'), 'the Files ARP writes section', [
+    'When `events.jsonl` or `enforcement.jsonl` in the data directory is larger than 50 MiB (52428800 bytes), ARP does not append the next line to it.',
+    'It renames the file to its name followed by a dot and the time in milliseconds, as `Date.now()` returns it, and writes the line to a new file under the old name.',
+    'The renamed files stay beside the new ones, so a data directory can also hold files such as `events.jsonl.1760000000000` and `enforcement.jsonl.1760000000000`.',
   ])
 })
 
