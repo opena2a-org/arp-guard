@@ -22,7 +22,7 @@ With `interceptors: { process: { enabled: true } }` in the config, ARP also repo
 
 ```bash
 node -e "
-const { AgentRuntimeProtection } = require('agent-runtime-protection');
+const { AgentRuntimeProtection } = require('arp-guard');
 (async () => {
   const arp = new AgentRuntimeProtection({
     agentName: 'my-agent',

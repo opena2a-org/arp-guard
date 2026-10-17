@@ -1,14 +1,16 @@
 // Runs README commands the way a reader runs them: pasted into bash, in its own
 // process, in a directory where `require('agent-runtime-protection')` resolves
-// to this repository's build. The commands are README text, so they are never evaluated
-// inside the test process. They get PATH and nothing else from the runner's
-// environment, and a time limit, so a script that never exits fails the test.
+// to this repository's build and `require('arp-guard')`, the name the README
+// installs, loads it through the shim in shim/arp-guard. The commands are
+// README text, so they are never evaluated inside the test process. They get
+// PATH and nothing else from the runner's environment, and a time limit, so a
+// script that never exits fails the test.
 // At the limit every process in the process group bash leads is stopped; a
 // process that starts a session or group of its own is outside that group and
 // keeps running.
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +44,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 // Runs `commands` with bash in a scratch directory whose
 // `node_modules/agent-runtime-protection` is this repository, so the package
 // resolves to `dist/index.js` exactly as an installed copy would. `node` on the child's PATH is the one running the tests.
+// Its `node_modules/arp-guard` is a copy of the shim's package.json and entry
+// point, which requires the package above and exports it. A link to the shim
+// would not do: Node resolves a linked package from its real path, and from
+// shim/arp-guard `agent-runtime-protection` is not found.
 // Resolves to the lines the commands printed to stdout; rejects if they time
 // out, exit non-zero or print to stderr.
 //
@@ -53,6 +59,9 @@ export async function runAsDocumented(commands, { timeout = 30_000 } = {}) {
   try {
     mkdirSync(join(dir, 'node_modules'))
     symlinkSync(root, join(dir, 'node_modules', 'agent-runtime-protection'), 'junction')
+    const shim = join(dir, 'node_modules', 'arp-guard')
+    mkdirSync(shim)
+    for (const file of ['package.json', 'index.js']) copyFileSync(join(root, 'shim', 'arp-guard', file), join(shim, file))
     const PATH = [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter)
     const run = await new Promise((resolve, reject) => {
       const child = spawn('bash', ['-c', commands], {
