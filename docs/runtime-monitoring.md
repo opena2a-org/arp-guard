@@ -74,6 +74,8 @@ ARP writes in its data directory and, while the behavioral twin is on, in `.open
 
 The data directory is `dataDir` in the config, by default `.opena2a/arp` under the working directory, and the constructor creates it, before `start()`. ARP appends each event to `events.jsonl` there and each enforcement action to `enforcement.jsonl`. Once L2 has made a call, it also keeps the L2 budget there, in `budget.json`.
 
+When `events.jsonl` or `enforcement.jsonl` in the data directory is larger than 50 MiB (52428800 bytes), ARP does not append the next line to it. It renames the file to its name followed by a dot and the time in milliseconds, as `Date.now()` returns it, and writes the line to a new file under the old name. The renamed files stay beside the new ones, so a data directory can also hold files such as `events.jsonl.1760000000000` and `enforcement.jsonl.1760000000000`.
+
 The behavioral twin is on unless the config turns it off, so it is on for the README's first [Runtime monitoring](../README.md#runtime-monitoring) example. From `start()` on, it appends a line for each event to `.opena2a/arp/events.jsonl` under the home directory, wherever `dataDir` points. This is the line for a PI-001 match that is the first event after `start()`, with `...` for the values that change from run to run:
 
 ```text
