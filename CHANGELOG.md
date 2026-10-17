@@ -18,6 +18,7 @@ This file starts at 0.4.0 and, for that release, lists the rename only.
 - The File operations section of `docs/runtime-monitoring.md` says that the filesystem interceptor also reports writes made through `writeFile`, `writeFileSync`, `appendFile`, `appendFileSync`, `mkdir` and `mkdirSync`, at `info`, at `high` for a path on its list of sensitive paths, and at `medium` for a path outside `interceptors.filesystem.allowedPaths` when that is set, and that it reports `unlink` and `unlinkSync` of a path on the list at `critical`.
 - The README says that the exported `VERSION` is the version of the engine, `@opena2a/aim-sdk`, not of this package, and how to read this package's own version.
 - `test/runtime-monitoring-page.test.mjs` checks what the Default rules, Files ARP writes and File operations sections say against probes run on the build.
+- The README is shorter: its Documentation line for `docs/runtime-monitoring.md` gives the page's topics in 19 words in place of 28, and seven more of its paragraphs are split into shorter ones. No text moved to another page.
 
 ## 0.4.0
 
