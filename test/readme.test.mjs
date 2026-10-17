@@ -13,6 +13,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { isBuiltin } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -25,7 +26,12 @@ const readme = readFileSync(join(root, 'README.md'), 'utf8').split('\n')
 const benchmarkPage = readFileSync(join(root, 'docs', 'benchmark.md'), 'utf8').split('\n')
 const runtimePage = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
 
-const INSTALL = 'npm install agent-runtime-protection'
+// The README installs and imports the package under the name its release on
+// npm is published under. `agent-runtime-protection`, the name package.json
+// gives on `main`, has no release on npm: while the Quick Start installed it,
+// the first command a reader pasted failed with a 404.
+const PUBLISHED = 'arp-guard'
+const INSTALL = `npm install ${PUBLISHED}`
 
 // A code fence, as CommonMark defines it: three or more backticks or tildes,
 // indented at most three spaces. With the `s` flag `.*` also takes a carriage
@@ -149,6 +155,46 @@ test('docs/install.md gives the last release published as arp-guard', () => {
   assert.match(sectionText(page, '## Renamed from arp-guard'), /published as `arp-guard` up to \d+\.\d+\.\d+\./)
 })
 
+// The package of each `npm install`, and of each `require` and `import` that is
+// not a Node built-in, in code blocks and inline code alike: a reader pastes
+// from both.
+function packagesNamed(lines) {
+  const named = new Set()
+  const forms = /npm install ([^\s`]+)|require\((['"])(.+?)\2\)|from (['"])(.+?)\4/g
+  for (const [, installed, , required, , imported] of lines.join('\n').matchAll(forms)) {
+    const specifier = installed ?? required ?? imported
+    if (isBuiltin(specifier)) continue
+    named.add(specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/'))
+  }
+  return [...named].sort()
+}
+
+test('the packages a page installs and imports are read from code blocks and inline code, without Node built-ins', () => {
+  const lines = [
+    'Run `npm install one-package` first.',
+    '```js',
+    "const { a } = require('one-package/sub');",
+    "import fs from 'node:fs';",
+    "import { b } from '@scope/other/deep';",
+    "require('child_process').execSync('true');",
+    '```',
+    '`require("third")` reads it.',
+  ]
+  assert.deepEqual(packagesNamed(lines), ['@scope/other', 'one-package', 'third'])
+})
+
+// docs/install.md gives the name the release on npm is published under. The
+// README, and docs/runtime-monitoring.md, whose examples the README links,
+// install and import that name and no other, so what a reader pastes from them
+// finds a package on npm.
+test('the README and docs/runtime-monitoring.md install and import the name the release on npm has', () => {
+  const page = readFileSync(join(root, 'docs', 'install.md'), 'utf8').split('\n')
+  const published = /published as `([^`]+)` up to \d+\.\d+\.\d+\./.exec(sectionText(page, '## Renamed from arp-guard'))
+  assert.equal(published?.[1], PUBLISHED, 'docs/install.md gives another name for the release on npm')
+  assert.deepEqual(packagesNamed(readme), [PUBLISHED], 'the README installs or imports another name')
+  assert.deepEqual(packagesNamed(runtimePage), [PUBLISHED], 'docs/runtime-monitoring.md installs or imports another name')
+})
+
 // The lines from a `## ` heading up to the next one, skipping `## ` lines inside
 // fenced code blocks the way sections() does.
 function sectionLines(lines, heading) {
@@ -255,12 +301,13 @@ test('the tests that time a run, and the helpers that wait until a deadline, mea
 })
 
 test('the documented script runs in its own process against the built package', async () => {
-  const [pid, resolved] = await runAsDocumented(
-    `node -e "console.log(process.pid); console.log(require.resolve('agent-runtime-protection'))"`,
+  const [pid, resolved, same] = await runAsDocumented(
+    `node -e "console.log(process.pid); console.log(require.resolve('agent-runtime-protection')); console.log(require('${PUBLISHED}') === require('agent-runtime-protection'))"`,
   )
   assert.ok(Number(pid) > 0, 'the script did not print a process id')
   assert.notEqual(Number(pid), process.pid, 'the script ran inside the test process')
   assert.equal(resolved, join(root, 'dist', 'index.js'))
+  assert.equal(same, 'true', `require('${PUBLISHED}') does not load the built package`)
 })
 
 test('the documented commands get PATH and no other variable from the runner', async () => {

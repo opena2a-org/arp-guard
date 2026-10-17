@@ -1,10 +1,10 @@
 # Install
 
-The [README](../README.md) installs `agent-runtime-protection`, the package's name on `main`. This page holds what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`.
+The [README](../README.md) installs `arp-guard`, the name the release on npm is published under. This page holds what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`.
 
 ## The Quick Start block on the published release
 
-`main` prints the two lines the README's [Quick Start](../README.md#quick-start) block shows. A fresh install of the published 0.3.0 on 2026-10-09 printed the same two lines from the same block with the package's earlier name, `arp-guard`, in both places; it resolved `hackmyagent@0.33.2`, and a later install can resolve another release in 0.3.0's `>=0.11.0` range.
+`main` prints the two lines the README's [Quick Start](../README.md#quick-start) block shows. A fresh install of the published 0.3.0 on 2026-10-17 printed the same two lines from the same block; it resolved `hackmyagent@0.33.2`, and a later install can resolve another release in 0.3.0's `>=0.11.0` range.
 
 ## What `npm install` delivers today
 
