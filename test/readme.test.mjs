@@ -920,6 +920,24 @@ test('the documented interceptor call prints what the Runtime monitoring section
   assert.deepEqual(printed, output.body)
 })
 
+// The README once said process spawns are monitored, and the process monitor
+// polls `ps`: a child that started and exited between two polls was never
+// reported. The Process spawns section of docs/runtime-monitoring.md says so,
+// and its example turns that monitor off and the process interceptor on, so
+// what the example prints does not depend on when a poll runs.
+test('the documented process-spawn call prints what the Process spawns section shows', async () => {
+  const { blocks } = section(runtimePage, 'Process spawns')
+  const index = blocks.findIndex((block) => block.lang === 'bash')
+  assert.notEqual(index, -1, 'the Process spawns section runs no process-spawn call')
+  const output = blocks[index + 1]
+  assert.equal(output?.lang, 'text', 'the process-spawn call has no output block after it')
+
+  const printed = await runAsDocumented(blocks[index].body.join('\n'))
+
+  assert.ok(printed.join('').length > 0, 'the process-spawn call printed nothing')
+  assert.deepEqual(printed, output.body)
+})
+
 // What the file probes below share: `observe` does file operations in the
 // scratch directory while a monitor runs, and prints for each whether a
 // filesystem event named its file. The script it is put in gives it `fs`, the
