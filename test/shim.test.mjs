@@ -9,6 +9,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -83,6 +84,78 @@ test('the shim publishes its entry point, its types and its README, and each exi
   for (const file of shim.files) {
     assert.ok(existsSync(path.join(shimDir, file)), `shim/arp-guard/${file} does not exist`)
   }
+})
+
+// `npm version` writes the new version to package.json and package-lock.json,
+// then runs the `version` script, then commits and tags. While it moved the
+// root package alone, the first two checks in this file failed after
+// `npm version patch --no-git-tag-version`; `npm test` runs this file, and the
+// release workflow runs `npm test` before it publishes. The bump is made as a
+// maintainer makes it, in a scratch git repository holding a copy of the files
+// `npm version` and the `version` script read and write. git and npm get PATH
+// from the runner's environment and a scratch HOME, so they read no
+// configuration from the user's home directory, and git reads none from the
+// system's.
+const VERSIONED_FILES = ['package.json', 'package-lock.json', 'scripts/version-shim.mjs', 'shim/arp-guard/package.json']
+
+function bumpInScratchRepository(npmArgs, check) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'arp-guard-version-'))
+  try {
+    const home = path.join(dir, 'home')
+    const repo = path.join(dir, 'repo')
+    mkdirSync(home)
+    for (const file of VERSIONED_FILES) {
+      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true })
+      copyFileSync(path.join(root, file), path.join(repo, file))
+    }
+    const run = (command, args) => {
+      const result = spawnSync(command, args, {
+        cwd: repo,
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_AUTHOR_NAME: 'version test',
+          GIT_AUTHOR_EMAIL: 'version-test@example.invalid',
+          GIT_COMMITTER_NAME: 'version test',
+          GIT_COMMITTER_EMAIL: 'version-test@example.invalid',
+          npm_config_update_notifier: 'false',
+        },
+      })
+      assert.equal(result.status, 0, `\`${command} ${args.join(' ')}\` failed: ${result.error ?? result.stderr}`)
+      return result.stdout
+    }
+    run('git', ['init', '-q'])
+    run('git', ['add', '--', ...VERSIONED_FILES])
+    run('git', ['commit', '-q', '-m', 'before the bump'])
+    run('npm', ['version', ...npmArgs])
+    const bumped = readJson(path.join(repo, 'package.json')).version
+    assert.notEqual(bumped, rootPackage.version, `\`npm version ${npmArgs.join(' ')}\` did not change the version`)
+    check({ run, repo, bumped })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('npm version gives the shim the new version and pins it, in the commit and tag it makes', () => {
+  bumpInScratchRepository(['patch'], ({ run, bumped }) => {
+    const tags = run('git', ['tag', '--points-at', 'HEAD']).split('\n').filter(Boolean)
+    assert.equal(tags.length, 1, `the bump commit carries ${tags.length} tags`)
+    const tagged = (file) => JSON.parse(run('git', ['show', `${tags[0]}:${file}`]))
+    assert.equal(tagged('package.json').version, bumped)
+    assert.equal(tagged('shim/arp-guard/package.json').version, bumped)
+    assert.deepEqual(tagged('shim/arp-guard/package.json').dependencies, { [rootPackage.name]: bumped })
+    assert.equal(run('git', ['status', '--porcelain']), '', '`npm version` left a change out of its commit')
+  })
+})
+
+test('npm version --no-git-tag-version gives the shim the new version and pins it', () => {
+  bumpInScratchRepository(['patch', '--no-git-tag-version'], ({ repo, bumped }) => {
+    const bumpedShim = readJson(path.join(repo, 'shim', 'arp-guard', 'package.json'))
+    assert.equal(bumpedShim.version, bumped)
+    assert.deepEqual(bumpedShim.dependencies, { [rootPackage.name]: bumped })
+  })
 })
 
 // `files` in the root package.json is a list of what ships. The shim stays out
