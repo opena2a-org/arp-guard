@@ -1,11 +1,18 @@
 # Changelog
 
-This file starts at 0.4.0 and, for that release, lists the rename only.
+This file starts at 0.4.0.
 
-## Unreleased
+## 0.4.0
+
+### Added
+
+- Of the names a `require` of the package returns, 0.3.0 had 41 and 0.4.0 has 86: 0.4.0 re-exports every name the engine, `@opena2a/aim-sdk/arp`, exports, in place of a list of names. None of the 41 is removed, nor any of the 36 types the declarations of 0.3.0 exported. The 45 names added are `ACTION_CLASSES`, `ClassificationAnnotator`, `CorrelationEngine`, `NanoMindGuardClassificationProvider`, `OUTCOME_CLASSES`, `RuntimeTwin`, `SIGNATURE_INGEST_PATH`, `SequenceLogWriter`, `SequenceProjector`, `SignatureEmitter`, `TACTIC_IDS`, `TARGET_CLASSES`, `TELEMETRY_SCHEMA_VERSION`, `appendAuditRecord`, `arpEventToLoggedAction`, `auditLogPath`, `behavioralHash`, `buildCanonical`, `buildSignedSubmission`, `canonicalShape`, `classifyTextHash`, `clearOptOutMarker`, `computeOrgPseudonym`, `currentOrgPseudonym`, `deriveOutcome`, `disclosureText`, `enrollSensor`, `eventToClassifyText`, `generateNonce`, `hasShownDisclosure`, `isTelemetryOptedOut`, `loadSensorId`, `manualEnrollCurl`, `manualPurgeCurl`, `maybeShowDisclosure`, `projectSequences`, `projectSequencesFromFile`, `purgeRemoteSignatures`, `readAuditRecords`, `readEnrollmentRecord`, `redactEvent`, `resolveTelemetryRegistryUrl`, `signatureTelemetryEnabled`, `toSignedResult` and `writeOptOutMarker`.
+- The package ships `docs/`, `CHANGELOG.md` and `STATUS.md` beside the README and the license, so the README's links to them, and the links between the pages under `docs/`, name files an install holds. `test/package-files.test.mjs` checks each link from a page the package ships against the files `npm pack --dry-run` lists.
+- A `version` script in `package.json`, which `npm version` runs after it sets the new version, gives the `arp-guard` shim in `shim/arp-guard` that version, pins the shim's dependency on this package to it, and stages the shim's `package.json`, so the commit and tag `npm version` makes carry both. Before it, `npm version patch --no-git-tag-version` moved this package to 0.4.1 and left the shim at 0.4.0, and two checks in `test/shim.test.mjs`, which `npm test` runs, failed. Two tests there now make a bump in a scratch git repository and check the shim after it.
 
 ### Changed
 
+- The package is renamed from `arp-guard` to `agent-runtime-protection`. Install `agent-runtime-protection` in place of `arp-guard` and change the import specifier. The rename changes no exported name and no API.
 - The README is shortened to the install line, the first call and its output, the runtime-monitoring and AI-layer scanning examples, and links. Its reference text moved, as written, to `docs/install.md` (what the release on npm delivers, and the rename from `arp-guard`), `docs/runtime-monitoring.md` (the MCP and A2A interceptors, and which file operations the monitor reports), `docs/how-it-works.md` (the intelligence stack, the architecture, and the pattern count) and `docs/benchmark.md` (OASB).
 - The README's longer paragraphs are split at sentence breaks into shorter ones. No text is added, removed or moved to another page.
 - The README's Quick Start and AI-Layer Scanning examples pass `PATTERN_SETS.inputPatterns` to `scanText` in place of `ALL_PATTERNS`, and the Quick Start prints the same two lines. `ALL_PATTERNS` also holds the MCP and A2A patterns, which in ordinary prose report backtick spans, `../` and privilege words; the README now says which set is for which traffic.
@@ -21,12 +28,7 @@ This file starts at 0.4.0 and, for that release, lists the rename only.
 - The README is shorter: its Documentation line for `docs/runtime-monitoring.md` gives the page's topics in 19 words in place of 28, and seven more of its paragraphs are split into shorter ones. No text moved to another page.
 - The README installs and imports `arp-guard`, the name the release on npm is published under, in place of `agent-runtime-protection`, which has no release on npm, so the Quick Start's first command, `npm install agent-runtime-protection`, failed with a 404. The README's other examples, its `require('arp-guard/package.json')` and the Process spawns example in `docs/runtime-monitoring.md` use the same name. The README's Renamed from arp-guard section says what `main` names the package, in place of telling a reader to install `agent-runtime-protection`. `docs/install.md` gives a fresh install of 0.3.0 on 2026-10-17 printing the Quick Start's two lines from the block as it now reads. The tests that run the README's commands load `arp-guard` from a copy of the shim in `shim/arp-guard`, which loads the build.
 - The Renamed from arp-guard section of `docs/install.md`, which the README links, says to install and import `arp-guard`, in place of telling a reader to install `agent-runtime-protection` and import it: that name has no release on npm, so the command failed with a 404, as the Quick Start's did. The section says what `package.json` and `shim/arp-guard` name the package on `main`, and a test checks that `docs/install.md` installs and imports `arp-guard` alone.
-
-## 0.4.0
-
-### Changed
-
-- The package is renamed from `arp-guard` to `agent-runtime-protection`. Install `agent-runtime-protection` in place of `arp-guard` and change the import specifier. The rename changes no exported name and no API.
+- `docs/install.md` gives the number of packages and the disk space a fresh install of 0.3.0 adds to `node_modules`, beside those of a tarball packed from `main`, and names `onnxruntime-node`, the dependency of 0.3.0 with an install script.
 
 ### Deprecated
 
