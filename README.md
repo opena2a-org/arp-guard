@@ -91,6 +91,8 @@ With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true, c
 
 [AI-layer capture](docs/runtime-monitoring.md#ai-layer-capture) says which requests, and which model API hosts, it scans, and why it is off unless `capture: true` is set.
 
+With `proxy` in the config, `start()` also starts the engine's HTTP reverse proxy on the loopback address, which scans the requests the agent sends through it, and their replies, with the interceptors `aiLayer` enables; [Proxy](docs/runtime-monitoring.md#proxy) says how.
+
 The interceptors are also scanners the agent can call itself, for traffic capture does not see.
 
 Make your own on the monitor's event engine, start it, and call it where the agent sends and receives that traffic:
