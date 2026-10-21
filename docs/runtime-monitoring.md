@@ -4,7 +4,9 @@ The README's [Runtime monitoring](../README.md#runtime-monitoring) section start
 
 ## AI-layer capture
 
-With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true }` in the config, `start()` also hooks the global `fetch` and `request` and `get` on the CommonJS `http` and `https` module objects, and, with `aiLayer.mcp`, `spawn` on the CommonJS `child_process` module object. The interceptors then scan the traffic the agent sends, and the model replies it reads, with no scan call in the agent. `stop()` puts the original functions back.
+With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true, capture: true }` in the config, `start()` also hooks the global `fetch` and `request` and `get` on the CommonJS `http` and `https` module objects, and, with `aiLayer.mcp`, `spawn` on the CommonJS `child_process` module object. The interceptors then scan the traffic the agent sends, and the model replies it reads, with no scan call in the agent. `stop()` puts the original functions back.
+
+Capture is off unless `capture: true` is set, because it runs the interceptors on the agent's own thread: in the call that sends a request or writes a line to a child's standard input, and as the agent reads a reply. For some texts, the time some of the engine's patterns take grows faster than the length of the text, so a long request, tool call or reply holds the agent while it is scanned: a `tools/call` line with a 16 KB argument can hold the `write` that sends it for seconds. Without `capture: true`, `enabled: true` adds an interceptor to `getStatus()` that nothing calls, and the agent scans its traffic with interceptors of its own, as [AI-layer interceptors](#ai-layer-interceptors) describes.
 
 - A request to a model API host: the prompt interceptor's `scanInput` gets the request body, and its `scanOutput` the response body once the agent has read it. The hosts are `aiLayer.prompt.hosts`, which replaces the default list. By default those are `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `api.mistral.ai`, `api.cohere.com`, `api.groq.com`, `api.deepseek.com`, `api.x.ai`, `api.together.xyz`, `api.fireworks.ai`, `openrouter.ai` and `*.openai.azure.com`. The package exports that list as `DEFAULT_MODEL_API_HOSTS`. An entry is a host name, `*.` before a domain for the hosts under it, or either followed by `:` and a port for that port alone.
 - A JSON-RPC `tools/call` request, sent to any host, or written as a line to the standard input of a child started with `spawn`, the way an MCP client writes to a stdio server: the MCP interceptor's `scanToolCall` gets the tool name and arguments and applies `aiLayer.mcp.allowedTools`.
@@ -28,7 +30,7 @@ const { AgentRuntimeProtection } = require('arp-guard');
     agentName: 'my-agent',
     intelligence: { enabled: false },
     monitors: { filesystem: { enabled: false } },
-    aiLayer: { prompt: { enabled: true, hosts: [host] } },
+    aiLayer: { prompt: { enabled: true, capture: true, hosts: [host] } },
   });
   arp.onEvent((e) => console.log(e.source, e.severity.padEnd(8), e.description));
   await arp.start();
@@ -48,7 +50,7 @@ prompt critical [PI-001] Instruction override attempt — direct override of sys
 prompt high     [DE-001] System prompt extraction — attempting to extract system instructions
 ```
 
-Capture observes: the request and the response reach the server and the agent as they were sent. `fetch` is called at once with the agent's arguments, as with no hook, and capture reads the body of a `Request` from a copy as it is sent. A `fetch` built on `http` and `https`, such as node-fetch set as the global `fetch`, is captured once, as a `fetch`. Capture does not scan a body larger than 1 MiB (1048576 bytes), a body passed to `fetch` in its options as a stream, `Blob` or `FormData`, or a response the agent takes no listener for, or stops reading before its end, through `http`. The requests L2 sends to its model are ARP's own, and capture does not scan them either. Nor does it see a call made through a reference to `fetch`, `request`, `get` or `spawn` taken before `start()`, such as the one an SDK client made before `start()` may hold, or through an ES module named or namespace import of `request`, `get` or `spawn` (`import { request } from 'node:https'`). An ES module default import (`import https from 'node:https'`) is the CommonJS module object, so a call on it is seen. `capture: false` in `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` turns that capture off and keeps the interceptor in `getStatus()`, for an agent that calls the interceptors itself.
+Capture observes: the request and the response reach the server and the agent as they were sent. `fetch` is called at once with the agent's arguments, as with no hook, and capture reads the body of a `Request` from a copy as it is sent. A `fetch` built on `http` and `https`, such as node-fetch set as the global `fetch`, is captured once, as a `fetch`. Capture does not scan a body larger than 1 MiB (1048576 bytes), a body passed to `fetch` in its options as a stream, `Blob` or `FormData`, or a response the agent takes no listener for, or stops reading before its end, through `http`. The requests L2 sends to its model are ARP's own, and capture does not scan them either. Nor does it see a call made through a reference to `fetch`, `request`, `get` or `spawn` taken before `start()`, such as the one an SDK client made before `start()` may hold, or through an ES module named or namespace import of `request`, `get` or `spawn` (`import { request } from 'node:https'`). An ES module default import (`import https from 'node:https'`) is the CommonJS module object, so a call on it is seen.
 
 ## AI-layer interceptors
 

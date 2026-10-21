@@ -1,8 +1,8 @@
 /**
  * AI-layer capture: the hooks `start()` installs when `aiLayer.prompt`,
- * `aiLayer.mcp` or `aiLayer.a2a` is enabled, so the traffic the agent sends,
- * and the model replies it reads, reach the interceptors without the
- * application calling them.
+ * `aiLayer.mcp` or `aiLayer.a2a` is enabled with `capture: true`, so the
+ * traffic the agent sends, and the model replies it reads, reach the
+ * interceptors without the application calling them.
  *
  * - Requests made with the global `fetch`, and with `request` or `get` on the
  *   CommonJS `http` and `https` module objects. To a model API host
@@ -145,11 +145,14 @@ export class AILayerCapture {
   constructor(engine: EventEngine, config: CaptureConfig) {
     const al = config.aiLayer;
     this.agentName = config.agentName;
-    this.prompt = al?.prompt?.enabled && al.prompt.capture !== false ? new PromptInterceptor(maskingReplyMatches(engine)) : null;
-    this.mcp = al?.mcp?.enabled && al.mcp.capture !== false ? new MCPProtocolInterceptor(engine, al.mcp.allowedTools) : null;
+    // Off unless `capture: true`: capture runs the engine's patterns on the
+    // agent's thread, in the call that sends a request or writes a line, and
+    // for some texts their time grows faster than the length of the text.
+    this.prompt = al?.prompt?.enabled && al.prompt.capture === true ? new PromptInterceptor(maskingReplyMatches(engine)) : null;
+    this.mcp = al?.mcp?.enabled && al.mcp.capture === true ? new MCPProtocolInterceptor(engine, al.mcp.allowedTools) : null;
     // The agent is the sender of every message capture sees, so the trusted
     // agent list, which names the senders the agent accepts, is not applied.
-    this.a2a = al?.a2a?.enabled && al.a2a.capture !== false ? new A2AProtocolInterceptor(engine) : null;
+    this.a2a = al?.a2a?.enabled && al.a2a.capture === true ? new A2AProtocolInterceptor(engine) : null;
     this.hosts = (al?.prompt?.hosts ?? DEFAULT_MODEL_API_HOSTS)
       .map(parseHostRule)
       .filter((rule): rule is HostRule => rule !== null);

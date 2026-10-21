@@ -87,9 +87,9 @@ The process monitor reads the process table with `ps` every `monitors.process.in
 
 A child that starts and exits between two polls is not reported.
 
-With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true }`, `start()` also hooks `fetch`, `request` and `get` of `http` and `https`, and, with `aiLayer.mcp`, `child_process.spawn`, to pass the prompts, MCP tool calls and A2A messages the agent sends, and the model replies it reads, to the AI-layer interceptors.
+With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true, capture: true }`, `start()` also hooks `fetch`, `request` and `get` of `http` and `https`, and, with `aiLayer.mcp`, `child_process.spawn`, to pass the prompts, MCP tool calls and A2A messages the agent sends, and the model replies it reads, to the AI-layer interceptors.
 
-[AI-layer capture](docs/runtime-monitoring.md#ai-layer-capture) says which requests, and which model API hosts, it scans.
+[AI-layer capture](docs/runtime-monitoring.md#ai-layer-capture) says which requests, and which model API hosts, it scans, and why it is off unless `capture: true` is set.
 
 The interceptors are also scanners the agent can call itself, for traffic capture does not see.
 
