@@ -250,6 +250,35 @@ test('the Benchmark section states any passing count its caveats refer to', () =
   assert.match(benchmark, /\b\d+ of \d+\b/, 'the section refers to a passing count it does not state')
 })
 
+// docs/benchmark.md records the OASB run its count comes from: the date, the
+// OASB release, the engine it ran against and how many scenarios passed. The
+// engine is the one package.json pins, so a change of the pin with no new run
+// fails here instead of leaving a count measured on another engine.
+test('the Benchmark section records the OASB run its count comes from, against the engine package.json pins', () => {
+  const benchmark = sectionText(benchmarkPage, '## Benchmark')
+  assert.doesNotMatch(benchmark, /No OASB run/, 'the section says no OASB run is recorded')
+  const run =
+    /On (\d{4}-\d{2}-\d{2}), OASB (\d+\.\d+\.\d+) ran against this package's engine, `@opena2a\/aim-sdk` (\d+\.\d+\.\d+), the version this package's `package\.json` pins: (\d+) of the (\d+) scenarios passed, (\d+) failed and (\d+) (?:was|were) skipped\./.exec(
+      benchmark,
+    )
+  assert.ok(run, 'the section records no OASB run with its date, OASB release, engine version and counts')
+  const [date, release, engine] = run.slice(1, 4)
+  const [passed, total, failed, skipped] = run.slice(4).map(Number)
+  const day = new Date(`${date}T00:00:00Z`)
+  assert.ok(!Number.isNaN(day.getTime()) && day.toISOString().startsWith(date), `${date} is not a calendar date`)
+  const suite = /a suite of (\d+) standardized/.exec(benchmark)
+  assert.ok(suite, 'the section does not state the suite size')
+  assert.equal(total, Number(suite[1]), 'the run counts another number of scenarios than the suite size the section states')
+  assert.equal(passed + failed + skipped, total, 'the passed, failed and skipped counts do not add up to the scenarios run')
+  assert.ok(benchmark.includes(`In OASB ${release}, `), `the ATLAS counts are not given for OASB ${release}, the release the run used`)
+  const pinned = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@opena2a/aim-sdk']
+  assert.equal(
+    engine,
+    pinned,
+    `the run is recorded against @opena2a/aim-sdk ${engine}, but package.json pins ${pinned}: run OASB against the pinned engine and record that run`,
+  )
+})
+
 test('the Benchmark network caveat names the polling network monitor, not network detection as a whole', () => {
   const benchmark = sectionText(benchmarkPage, '## Benchmark')
   assert.match(benchmark, /polling network monitor/, 'the caveat does not name the polling network monitor')
