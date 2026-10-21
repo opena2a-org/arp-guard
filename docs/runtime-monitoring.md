@@ -14,7 +14,7 @@ Capture is off unless `capture: true` is set, because it runs the interceptors o
 
 From a request body in the chat completions, Messages, Gemini, Responses or Ollama format, `scanInput` gets the text of the user, tool and function turns after the last assistant turn, and `prompt` or a string `input`. The system and developer turns are the application's own, and a turn before the last assistant turn is not scanned, so a turn is not scanned again each time the conversation is sent. From a response, whole or streamed as server-sent events or JSON lines, `scanOutput` gets the model's text as one string. A gzip, deflate or brotli response the agent reads through `http` is decompressed first.
 
-An event for a match in a reply carries `[masked: <n> characters]` in `data.matchedText`, in place of the `<n>` characters the pattern matched: for `OL-001` those are a credential, and for `OL-002` personal data. The event log, the `onEvent` handlers and L2 get the pattern, its severity and its description, and not the value.
+An event for a match in a reply carries `[masked: <n> characters]` in `data.matchedText`, in place of the text the pattern matched: for `OL-001` that is a credential, and for `OL-002` personal data. `<n>` counts the matched text the engine keeps, at most its first 200 characters, so a match of 368 characters is reported as `[masked: 200 characters]`. The event log, the `onEvent` handlers and L2 get the pattern, its severity and its description, and not the value.
 
 This example stands in for a model API with a server on `127.0.0.1` and names it as the one host. It turns the filesystem monitor off, which would also print the creation of the logs in the data directory:
 
