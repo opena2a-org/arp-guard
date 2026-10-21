@@ -1,9 +1,9 @@
 /**
  * The engine's AgentRuntimeProtection, with AI-layer capture: when
- * `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` is enabled, `start()` also
- * installs the hooks in ./ai-capture, which feed the traffic the agent sends,
- * and the model replies it reads, to the prompt, MCP and A2A interceptors, and
- * `stop()` removes them.
+ * `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` is enabled with
+ * `capture: true`, `start()` also installs the hooks in ./ai-capture, which
+ * feed the traffic the agent sends, and the model replies it reads, to the
+ * prompt, MCP and A2A interceptors, and `stop()` removes them.
  */
 import {
   AgentRuntimeProtection as EngineAgentRuntimeProtection,
@@ -17,7 +17,7 @@ import { AILayerCapture, runAsArpOwnWork } from './ai-capture';
 export interface AILayerConfig extends EngineAILayerConfig {
   prompt?: {
     enabled: boolean;
-    /** `false` keeps `start()` from capturing model API traffic (default: true). */
+    /** `true` makes `start()` capture model API traffic (default: false). */
     capture?: boolean;
     /** Model API hosts whose traffic is scanned (default: DEFAULT_MODEL_API_HOSTS). */
     hosts?: string[];
@@ -25,13 +25,13 @@ export interface AILayerConfig extends EngineAILayerConfig {
   mcp?: {
     enabled: boolean;
     allowedTools?: string[];
-    /** `false` keeps `start()` from capturing MCP tool calls (default: true). */
+    /** `true` makes `start()` capture MCP tool calls (default: false). */
     capture?: boolean;
   };
   a2a?: {
     enabled: boolean;
     trustedAgents?: string[];
-    /** `false` keeps `start()` from capturing A2A messages (default: true). */
+    /** `true` makes `start()` capture A2A messages (default: false). */
     capture?: boolean;
   };
 }
