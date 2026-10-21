@@ -727,6 +727,38 @@ test('what an output pattern matches in a model reply is masked in the event, in
   }
 })
 
+// The engine keeps at most the first 200 characters of what a pattern matched,
+// and the mask counts the characters it kept, so a longer match is masked as
+// 200 characters. The runtime monitoring page gave the count as that of the
+// characters the pattern matched. Each match here is OL-003's, `My`, a run of
+// spaces and `system prompt is`, so none is shaped as a credential.
+test('the mask of a match in a model reply counts the characters the engine keeps of it, at most 200, as the runtime monitoring page says', async () => {
+  const lengths = [199, 200, 201, 368]
+  const matches = lengths.map((length) => `My${' '.repeat(length - 'Mysystem prompt is'.length)}system prompt is`)
+  const replies = matches.map((matched) => JSON.stringify({ choices: [{ message: { role: 'assistant', content: `${matched}: answer briefly.` } }] }))
+  const model = await serve(() => ({ body: replies.shift() }))
+  const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [model.host] } })
+  let masked
+  try {
+    await arp.start()
+    for (let sent = 1; sent <= matches.length; sent++) {
+      await (await fetch(`http://${model.host}/v1/chat/completions`, { method: 'POST', body: chat('Hello') })).text()
+      await until(events, (all) => summary(all, 'prompt').length >= sent)
+    }
+    assert.deepEqual(matches.map((matched) => matched.length), lengths)
+    assert.deepEqual(summary(events, 'prompt'), lengths.map(() => 'output [OL-003] System prompt leak — LLM response appears to contain system instructions'))
+    masked = events.filter((e) => e.source === 'prompt').map((e) => e.data.matchedText)
+    assert.deepEqual(masked, ['[masked: 199 characters]', '[masked: 200 characters]', '[masked: 200 characters]', '[masked: 200 characters]'])
+  } finally {
+    await arp.stop()
+    await model.close()
+    cleanup()
+  }
+  const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
+  const said = `\`<n>\` counts the matched text the engine keeps, at most its first 200 characters, so a match of ${lengths.at(-1)} characters is reported as \`${masked.at(-1)}\`.`
+  assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
+})
+
 test('a call through a reference to fetch, request, get or spawn taken before start() is not seen', async () => {
   const reply = JSON.stringify({ choices: [{ message: { role: 'assistant', content: LEAK } }] })
   const model = await serve(() => ({ body: reply }))
