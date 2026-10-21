@@ -87,7 +87,11 @@ The process monitor reads the process table with `ps` every `monitors.process.in
 
 A child that starts and exits between two polls is not reported.
 
-`start()` does not see the prompts, MCP tool calls or A2A messages the agent sends or receives: the AI-layer interceptors are scanners the agent calls.
+With `aiLayer.prompt`, `aiLayer.mcp` or `aiLayer.a2a` set to `{ enabled: true }`, `start()` also hooks `fetch`, `request` and `get` of `http` and `https`, and, with `aiLayer.mcp`, `child_process.spawn`, to pass the prompts, MCP tool calls and A2A messages the agent sends, and the model replies it reads, to the AI-layer interceptors.
+
+[AI-layer capture](docs/runtime-monitoring.md#ai-layer-capture) says which requests, and which model API hosts, it scans.
+
+The interceptors are also scanners the agent can call itself, for traffic capture does not see.
 
 Make your own on the monitor's event engine, start it, and call it where the agent sends and receives that traffic:
 
@@ -167,7 +171,7 @@ This package's own version is in its `package.json`, which `require('arp-guard/p
 ## Documentation
 
 - [Install](docs/install.md): what the release on npm delivers, how it differs from `main`, and the rename from `arp-guard`
-- [Runtime monitoring](docs/runtime-monitoring.md): the MCP and A2A interceptors, file operations, process spawns, the default rules, and the files ARP writes
+- [Runtime monitoring](docs/runtime-monitoring.md): AI-layer capture, the MCP and A2A interceptors, file operations, process spawns, the default rules, and the files ARP writes
 - [How it works](docs/how-it-works.md): when the intelligence stack sends an event to L2, its defaults, and where the engine lives
 - [Benchmark](docs/benchmark.md): OASB, and how to read its results as coverage of this package
 - [Status](STATUS.md) and [Changelog](CHANGELOG.md)
