@@ -103,7 +103,7 @@ const capturedFetch = new AsyncLocalStorage<true>();
  * leaked, a credential for OL-001 and personal data for OL-002. The event
  * keeps the pattern, its severity and its description.
  */
-function maskingReplyMatches(engine: EventEngine): EventEngine {
+export function maskingReplyMatches(engine: EventEngine): EventEngine {
   const masking = Object.create(engine) as EventEngine;
   masking.emit = (event) => engine.emit(maskReplyMatch(event));
   return masking;
@@ -141,6 +141,9 @@ export class AILayerCapture {
   private readonly hosts: HostRule[];
   private patches: Patch[] = [];
   private active = false;
+  // The port of ARP's proxy on the loopback address, which scans the requests
+  // the agent sends to it itself.
+  private proxyPort: string | null = null;
 
   constructor(engine: EventEngine, config: CaptureConfig) {
     const al = config.aiLayer;
@@ -163,9 +166,18 @@ export class AILayerCapture {
     return Boolean(this.prompt || this.mcp || this.a2a);
   }
 
+  /** Leaves a request to ARP's proxy, on 127.0.0.1 or localhost at `port`, to the proxy. */
+  leaveToProxy(port: number | null): void {
+    this.proxyPort = port === null ? null : String(port);
+  }
+
   // True when a hooked call is the agent's traffic to capture.
   private capturing(): boolean {
     return this.active && !isArpOwnWork();
+  }
+
+  private isProxy(target: Target): boolean {
+    return target.port === this.proxyPort && (target.hostname === '127.0.0.1' || target.hostname === 'localhost');
   }
 
   async start(): Promise<void> {
@@ -243,7 +255,7 @@ export class AILayerCapture {
     let request: { target: Target; model: boolean; body: string | Promise<string | null> | null } | null = null;
     try {
       const target = fetchTarget(args[0]);
-      if (target) {
+      if (target && !this.isProxy(target)) {
         const model = this.isModelHost(target);
         request = { target, model, body: fetchBody(args[0], args[1], model) };
       }
@@ -278,7 +290,7 @@ export class AILayerCapture {
 
   private watchClientRequest(req: http.ClientRequest, args: unknown[], protocol: string): void {
     const target = requestTarget(args, protocol);
-    if (!target) return;
+    if (!target || this.isProxy(target)) return;
     const model = this.isModelHost(target);
     if (!model && !this.mcp && !this.a2a) return;
     const self = this;
