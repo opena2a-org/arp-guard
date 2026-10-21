@@ -5,8 +5,24 @@ How to read an OASB result as coverage of this package. Back to the [README](../
 ## Benchmark
 
 [OASB](https://github.com/opena2a-org/oasb) is a suite of 222 standardized test scenarios,
-and it ships ARP as its reference adapter. No OASB run against this package's engine is
-recorded here yet, so 222 is the number of scenarios, not the number that pass.
+and it ships ARP as its reference adapter. On 2026-10-21, OASB 0.4.0 ran against this
+package's engine, `@opena2a/aim-sdk` 1.3.1, the version this package's `package.json`
+pins: 221 of the 222 scenarios passed, 0 failed and 1 was skipped. The skipped one is
+`E2E-003`, the live network test the second caveat below describes.
+
+The run used Node 20.20.2 on Linux (arm64), in the `node:20-bookworm` container image,
+with `arp-guard` in the OASB checkout replaced by a build of this repository. To repeat
+it, run `npm ci && npm run build` in a checkout of this repository, then these commands
+in a checkout of OASB, with `/path/to/agent-runtime-protection` standing for the first
+checkout:
+
+```bash
+git checkout v0.4.0
+npm ci
+npm pack /path/to/agent-runtime-protection /path/to/agent-runtime-protection/shim/arp-guard
+npm install --no-save ./agent-runtime-protection-*.tgz ./arp-guard-*.tgz
+npx vitest run src/atomic src/integration src/baseline src/e2e
+```
 
 Three caveats for reading an OASB result as coverage of this package, all verifiable from
 a clean OASB checkout:
@@ -22,6 +38,9 @@ a clean OASB checkout:
   monitor off and inject pre-classified events
   (`grep -c "network: false" src/atomic/network/*.test.ts`). Detection through the
   opt-in network interceptor is exercised, by `E2E-005`.
-- The suite resolves ARP through an older `hackmyagent` that carries its own
-  pre-migration copy of the runtime engine. Re-point it at `@opena2a/aim-sdk/arp`
-  before reading the result as coverage of what this package ships today.
+- `npm ci` in a checkout of OASB 0.4.0 does not install this package's engine. Its
+  lockfile pins `arp-guard` 0.3.0, which loads `hackmyagent/arp` from `hackmyagent`
+  0.23.8, a release that carries its own pre-migration copy of the runtime engine.
+  The run above replaced `arp-guard` with this repository's build, as the commands
+  show. Read a result as coverage of what this package ships today only from a run
+  that does the same.
