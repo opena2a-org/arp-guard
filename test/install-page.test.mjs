@@ -94,6 +94,18 @@ function sentences(prose) {
   return prose.join(' ').replace(/\s+/g, ' ').split(/(?<=[.!?]) (?=\S)/)
 }
 
+// Whether `sentence` says that 0.3.0 does not export the two consent functions:
+// each name is in a list of code spans, joined by commas, `and` or `or`, right
+// after `0.3.0 does not export` or `0.3.0 does not export include`. A `not`
+// elsewhere in the sentence, such as the one in the page's "and not a library
+// call", says nothing about the exports.
+const NOT_EXPORTED = /\b0\.3\.0 does not export (?:include )?(`[^`]+`(?:(?:,? (?:and|or) |, )`[^`]+`)*)/g
+
+function saysNotExported(sentence) {
+  const lists = [...sentence.matchAll(NOT_EXPORTED)].map((match) => match[1])
+  return ['writeOptOutMarker', 'clearOptOutMarker'].every((name) => lists.some((list) => list.includes(`\`${name}\``)))
+}
+
 const delivers = section(page, HEADING)
 
 test('the items counted are the top-level list items outside code blocks', () => {
@@ -105,6 +117,19 @@ test('the items counted are the top-level list items outside code blocks', () =>
 test('an item runs up to the next item or up to a paragraph after the list', () => {
   const prose = ['Text.', '', '- first', 'wrapped', '  - nested', '', '  more of first', '* second', '', 'After the list.']
   assert.deepEqual(itemTexts(prose), ['- first wrapped - nested more of first', '* second'])
+})
+
+test('only names listed right after "0.3.0 does not export" are read as not exported', () => {
+  const said =
+    "The names 0.3.0 does not export include `writeOptOutMarker` and `clearOptOutMarker`, the engine's consent functions, so on 0.3.0 the telemetry opt-out is `npx aim-arp telemetry opt-out`, which writes the marker `writeOptOutMarker()` writes on `main`, and not a library call."
+  assert.ok(saysNotExported(said), 'the page sentence is not read as saying that 0.3.0 does not export the functions')
+  // Without its negation, the sentence still ends "and not a library call".
+  const exported = said.replace('The names 0.3.0 does not export include', 'The names 0.3.0 exports include')
+  assert.ok(!saysNotExported(exported), 'a sentence that says 0.3.0 exports the functions is read as saying it does not')
+  const otherClause = 'The names 0.3.0 does not export include `canonicalize`, and its names include `writeOptOutMarker` and `clearOptOutMarker`.'
+  assert.ok(!saysNotExported(otherClause), 'a negation in another clause is read as saying that 0.3.0 does not export the functions')
+  const doubleNegation = 'The names 0.3.0 does not export do not include `writeOptOutMarker` and `clearOptOutMarker`.'
+  assert.ok(!saysNotExported(doubleNegation), 'a second negation before the names is read as saying that 0.3.0 does not export them')
 })
 
 test('the section says that the install brings a model runtime with a postinstall script that npm reports', () => {
@@ -120,10 +145,10 @@ test('the section names the executables the install places in node_modules/.bin'
 })
 
 test('the section says that the release does not export the two consent functions', () => {
-  const said = sentences(delivers.prose).find(
-    (sentence) => /\bwriteOptOutMarker\b/.test(sentence) && /\bclearOptOutMarker\b/.test(sentence) && /\b(not|absent)\b/.test(sentence),
+  assert.ok(
+    sentences(delivers.prose).some(saysNotExported),
+    'no sentence of the section lists writeOptOutMarker and clearOptOutMarker right after "0.3.0 does not export"',
   )
-  assert.ok(said, 'no sentence of the section names writeOptOutMarker and clearOptOutMarker and says they are absent from the release')
 })
 
 test('the number of differences the section gives is the number of items in its list', () => {
