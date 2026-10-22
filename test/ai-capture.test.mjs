@@ -584,8 +584,11 @@ test('a request body over 1 MiB to a model API host is reported once, with its s
     for (const bytes of [MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES + 1]) {
       await (await fetch(url, { method: 'POST', body: request(bytes) })).text()
       await httpPost(url, request(bytes))
+      // Capture reads the copy of a Request's body. This one comes in one
+      // chunk, so capture reads it to its end and counts all of it.
+      await (await fetch(new Request(url, { method: 'POST', body: request(bytes) }))).text()
     }
-    await until(events, (all) => summary(all, 'prompt').length >= 6)
+    await until(events, (all) => summary(all, 'prompt').length >= 9)
     await sleep(200)
     const over = `request A request body of ${MAX_CAPTURE_BYTES + 1} bytes to http://${model.host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`
     assert.deepEqual(summary(events, 'prompt'), [
@@ -593,6 +596,9 @@ test('a request body over 1 MiB to a model API host is reported once, with its s
       'input [DE-001] System prompt extraction — attempting to extract system instructions',
       'input [PI-001] Instruction override attempt — direct override of system instructions',
       'input [DE-001] System prompt extraction — attempting to extract system instructions',
+      'input [PI-001] Instruction override attempt — direct override of system instructions',
+      'input [DE-001] System prompt extraction — attempting to extract system instructions',
+      over,
       over,
       over,
     ])
@@ -602,8 +608,15 @@ test('a request body over 1 MiB to a model API host is reported once, with its s
       severity: 'info',
       data: { reason: 'body-over-limit', direction: 'request', origin: `http://${model.host}`, bytes: MAX_CAPTURE_BYTES + 1, limitBytes: MAX_CAPTURE_BYTES },
     }
-    assert.deepEqual(reports(events), [report, report])
-    assert.deepEqual(model.received.map((r) => Buffer.byteLength(r.body)), [MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES + 1, MAX_CAPTURE_BYTES + 1])
+    assert.deepEqual(reports(events), [report, report, report])
+    assert.deepEqual(model.received.map((r) => Buffer.byteLength(r.body)), [
+      MAX_CAPTURE_BYTES,
+      MAX_CAPTURE_BYTES,
+      MAX_CAPTURE_BYTES,
+      MAX_CAPTURE_BYTES + 1,
+      MAX_CAPTURE_BYTES + 1,
+      MAX_CAPTURE_BYTES + 1,
+    ])
   } finally {
     await arp.stop()
     await model.close()
@@ -673,6 +686,69 @@ test('a reply over 1 MiB from a model API host, or one that decodes to more, is 
       report(MAX_CAPTURE_BYTES + 1),
       ...Object.keys(compress).map((how) => report(compressed(how), { contentEncoding: how })),
     ])
+  } finally {
+    await arp.stop()
+    server.closeAllConnections?.()
+    await new Promise((resolve) => server.close(resolve))
+    cleanup()
+  }
+})
+
+// Capture counts the copy of a fetch reply with no Content-Length, and of a
+// Request body passed as a stream, up to the first chunk past the limit, and
+// stops reading one that goes on past that chunk. The event gave the bytes read
+// to that point as the size of the body: a reply of 3 MiB in parts of 16 KiB
+// was "A response body of 1064178 bytes". The description now says the body is
+// at least that count, and `http`, which counts each byte the agent reads,
+// still gives the size. A body that ends with that chunk, as the reply of 1 MiB
+// and 1 byte in parts above, is still described with its size.
+test('a fetch body over 1 MiB that capture stops reading is reported as at least the bytes it counted, and the same reply through http with its size', async () => {
+  const total = 3 * 1024 * 1024
+  const reply = ofSize({ choices: [{ message: { role: 'assistant', content: LEAK } }] }, total)
+  const server = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json', connection: 'close' })
+      Readable.from(reply.match(/[^]{1,16384}/g), { objectMode: false }).pipe(res)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const host = `127.0.0.1:${server.address().port}`
+  const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [host] } })
+  const url = `http://${host}/v1/chat/completions`
+  const request = ofSize({ model: 'test-model', messages: [{ role: 'user', content: 'Hello' }] }, total)
+  try {
+    await arp.start()
+    const viaFetch = Buffer.from(await (await fetch(url, { method: 'POST', body: chat('Hello') })).arrayBuffer())
+    assert.equal(viaFetch.length, total, 'the agent did not read the whole reply through fetch')
+    await until(events, (all) => reports(all).length >= 1)
+    const viaHttp = (await httpPost(url, chat('Hello'))).body
+    assert.equal(viaHttp.length, total, 'the agent did not read the whole reply through http')
+    await until(events, (all) => reports(all).length >= 2)
+    const parts = Buffer.from(request).toString('utf8').match(/[^]{1,65536}/g)
+    const stream = new ReadableStream({
+      pull(controller) {
+        const part = parts.shift()
+        if (part === undefined) controller.close()
+        else controller.enqueue(new TextEncoder().encode(part))
+      },
+    })
+    await (await fetch(new Request(url, { method: 'POST', body: stream, duplex: 'half' }))).text()
+    // The reply to the streamed request is the same reply, read through fetch.
+    await until(events, (all) => reports(all).length >= 4)
+    await sleep(200)
+    const [fromFetch, fromHttp, toFetch, again] = events.filter((e) => e.data.reason === 'body-over-limit')
+    assert.ok(fromFetch && fromHttp && toFetch && again, 'a body over the limit was not reported')
+    for (const counted of [fromFetch, toFetch, again]) {
+      assert.ok(counted.data.bytes > MAX_CAPTURE_BYTES && counted.data.bytes < total, `capture counted ${counted.data.bytes} bytes`)
+    }
+    assert.deepEqual(summary(events, 'prompt'), [
+      `response A response body of at least ${fromFetch.data.bytes} bytes from http://${host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`,
+      `response A response body of ${total} bytes from http://${host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`,
+      `request A request body of at least ${toFetch.data.bytes} bytes to http://${host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`,
+      `response A response body of at least ${again.data.bytes} bytes from http://${host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`,
+    ])
+    assert.equal(fromHttp.data.bytes, total)
   } finally {
     await arp.stop()
     server.closeAllConnections?.()
@@ -869,6 +945,8 @@ test('the runtime monitoring page says what capture reports for a body over 1 Mi
     'Capture reports a body it does not scan because it is larger than 1 MiB, and a scan whose result has `truncated: true`, each as one event at `info` in the `normal` category, which carries the reason and the lengths and none of the text.',
     'A body capture does not scan for another reason, such as a `Blob`, is not reported.',
     `A body larger than 1 MiB: \`data.reason\` is \`body-over-limit\`, \`data.bytes\` the body's \`Content-Length\` or the bytes capture counted of it, and \`data.limitBytes\` ${MAX_CAPTURE_BYTES}, with \`data.direction\`, \`request\` or \`response\`, and \`data.origin\`, which is \`null\` for a line written to a child's standard input.`,
+    'When the copy of a body goes on past its first chunk past 1 MiB, capture stops reading it, as it does with the `fetch` of Node.js for a reply with no `Content-Length` and for the body of a `Request` with no `Content-Length` header: `data.bytes` is then the count up to that chunk, and the description says the body is at least that many bytes.',
+    'A body that ends with that chunk is described with its size.',
     'A reply the agent reads through `http` in gzip, deflate or brotli that decodes to more than 1 MiB is reported with its bytes before decoding and `data.contentEncoding`.',
     'The event comes from `prompt` for a model API host, and otherwise from `mcp-protocol`, or from `a2a-protocol` when `aiLayer.mcp` capture is off.',
     'With `aiLayer.prompt` capture alone, capture does not scan a request to a host other than a model API host, so it does not report a body larger than 1 MiB sent there either.',
