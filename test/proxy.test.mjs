@@ -94,9 +94,9 @@ function chat(content) {
 
 const toolCall = (id, name, args) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })
 
-function post(port, path, body) {
+function post(port, path, body, host = '127.0.0.1') {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+    const req = http.request({ host, port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
       const chunks = []
       res.on('data', (chunk) => chunks.push(chunk))
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }))
@@ -363,6 +363,91 @@ test("with capture on as well, the proxy judges an A2A message by the body's fro
     `So with \`trustedAgents: ['planner']\`, a \`message/send\` body whose \`from\` is \`stranger\` gets an \`${untrusted}\` event when the agent sends it through the proxy, and no such event when the agent sends it to the peer itself with \`capture: true\`.`,
   ]) {
     assert.ok(a2aLine.includes(said), `the Proxy section's a2a line does not say: ${said}`)
+  }
+})
+
+// Before, capture took only 127.0.0.1 and localhost for the proxy's host, so
+// it scanned a request to the proxy at 0.0.0.0 as well, and the one request
+// gave two events.
+test('with capture on as well, a request sent through the proxy at 0.0.0.0 is scanned once, by the proxy, as one at 127.0.0.1 is', async () => {
+  const mcp = await serve(() => ({ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }) }))
+  const { arp, events, cleanup } = protect({ mcp: { enabled: true, capture: true } }, [
+    { pathPrefix: '/mcp', target: `http://${mcp.host}`, protocol: 'mcp-http' },
+  ])
+  try {
+    await arp.start()
+    const port = arp.getProxy().getPort()
+    const json = { 'content-type': 'application/json' }
+    await (await fetch(`http://0.0.0.0:${port}/mcp`, { method: 'POST', headers: json, body: toolCall(1, 'read_file', { path: '../../etc/hosts' }) })).text()
+    await post(port, '/mcp', toolCall(2, 'read_file', { path: '../../etc/hosts' }), '0.0.0.0')
+    await until(events, (all) => summary(all, 'mcp-protocol').length >= 2)
+    await sleep(200)
+    assert.deepEqual(summary(events, 'mcp-protocol'), [
+      '[MCP-001] Path traversal in MCP tool parameter in tool "read_file"',
+      '[MCP-001] Path traversal in MCP tool parameter in tool "read_file"',
+    ])
+    assert.equal(mcp.received.length, 2)
+  } finally {
+    await arp.stop()
+    await mcp.close()
+    cleanup()
+  }
+})
+
+// The proxy scans each request it passes to an mcp-http upstream, so a request
+// that reaches it gives one event when capture leaves it to the proxy, and two
+// when capture scans it as well. A request to a host the proxy does not listen
+// on does not reach it, and gives one event when capture scans it. Each tool
+// is named after the host its request is sent to.
+test('capture leaves to the proxy a request to its port at localhost, 127.0.0.1 or 0.0.0.0, or at 127.0.0.1 or 0.0.0.0 as an IPv4-mapped IPv6 address, and scans one at a host the proxy does not listen on', async () => {
+  const upstream = await serve(() => ({ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }) }))
+  const { arp, events, cleanup } = protect({ mcp: { enabled: true, capture: true } }, [
+    { pathPrefix: '/mcp', target: `http://${upstream.host}`, protocol: 'mcp-http' },
+  ])
+  const hosts = ['localhost', '127.0.0.1', '0.0.0.0', '[::ffff:127.0.0.1]', '[::ffff:0.0.0.0]', '127.0.0.2', '[::1]']
+  const hostnames = ['0.0.0.0', '::ffff:127.0.0.1', '::ffff:0:0', '127.0.0.2', '::1', '[::ffff:127.0.0.1]']
+  const tools = [...hosts.map((host) => `fetch ${host}`), ...hostnames.map((hostname) => `request ${hostname}`)]
+  try {
+    await arp.start()
+    const port = arp.getProxy().getPort()
+    const json = { 'content-type': 'application/json' }
+    for (const host of hosts) {
+      const body = toolCall(1, `fetch ${host}`, { path: '../../etc/hosts' })
+      await fetch(`http://${host}:${port}/mcp`, { method: 'POST', headers: json, body, signal: AbortSignal.timeout(2000) })
+        .then((res) => res.text())
+        .catch(() => {})
+    }
+    // An address in brackets in the `hostname` option is a name to `http`,
+    // which it passes to `lookup`; this one refuses every name.
+    const lookup = (name, options, callback) => callback(Object.assign(new Error(`not looked up: ${name}`), { code: 'ENOTFOUND' }))
+    for (const hostname of hostnames) {
+      const body = toolCall(1, `request ${hostname}`, { path: '../../etc/hosts' })
+      await new Promise((done) => {
+        const req = http.request({ hostname, port, path: '/mcp', method: 'POST', headers: json, lookup, timeout: 2000 }, (res) => res.resume())
+        req.on('timeout', () => req.destroy())
+        req.on('error', () => {})
+        req.on('close', done)
+        req.end(body)
+      })
+    }
+    await until(events, (all) => summary(all, 'mcp-protocol').length >= tools.length)
+    await sleep(200)
+    assert.deepEqual(summary(events, 'mcp-protocol'), tools.map((tool) => `[MCP-001] Path traversal in MCP tool parameter in tool "${tool}"`))
+    // The requests capture left to the proxy reached it, and no other did.
+    assert.deepEqual(upstream.received.map((r) => JSON.parse(r.body).params.name), [
+      'fetch localhost',
+      'fetch 127.0.0.1',
+      'fetch 0.0.0.0',
+      'fetch [::ffff:127.0.0.1]',
+      'fetch [::ffff:0.0.0.0]',
+      'request 0.0.0.0',
+      'request ::ffff:127.0.0.1',
+      'request ::ffff:0:0',
+    ])
+  } finally {
+    await arp.stop()
+    await upstream.close()
+    cleanup()
   }
 })
 
