@@ -163,13 +163,16 @@ type NodeStream = { on(event: string, listener: (...args: unknown[]) => void): u
 type HeadersLike = { get(name: string): string | null };
 type FetchResponse = { body: unknown; headers: HeadersLike; clone(): FetchResponse };
 type EngineEvent = Parameters<EventEngine['emit']>[0];
+// The bytes capture counted of a body larger than MAX_CAPTURE_BYTES, with
+// `atLeast` set when it stopped counting before the end of the body.
+type Over = { over: number; atLeast?: true };
 // A body capture read whole, or the bytes it counted of one larger than
 // MAX_CAPTURE_BYTES before it stopped.
-type Read = { bytes: Buffer } | { over: number };
+type Read = { bytes: Buffer } | Over;
 // The text of a request body capture scans, the bytes it counted of one it does
 // not scan because it is larger than MAX_CAPTURE_BYTES, or null for a body it
 // does not scan for another reason.
-type Body = string | { over: number } | null;
+type Body = string | Over | null;
 
 export class AILayerCapture {
   private readonly engine: EventEngine;
@@ -340,7 +343,7 @@ export class AILayerCapture {
   // Scans a request body, or reports one that is too large to scan.
   private takeRequest(target: Target, model: boolean, body: Body): void {
     if (typeof body === 'string') safely(() => this.scanRequest(target, model, body));
-    else if (body !== null) safely(() => this.reportOverLimit(target, model, 'request', body.over));
+    else if (body !== null) safely(() => this.reportOverLimit(target, model, 'request', body.over, undefined, body.atLeast));
   }
 
   private watchFetchResponse(target: Target, response: FetchResponse): void {
@@ -350,7 +353,7 @@ export class AILayerCapture {
     if (length > MAX_CAPTURE_BYTES) return this.reportOverLimit(target, true, 'response', length);
     void readCopy(response.clone().body).then((read) => {
       if (read === null) return;
-      if ('over' in read) safely(() => this.reportOverLimit(target, true, 'response', read.over));
+      if ('over' in read) safely(() => this.reportOverLimit(target, true, 'response', read.over, undefined, read.atLeast));
       else safely(() => this.scanResponse(read.bytes.toString('utf8')));
     });
   }
@@ -556,14 +559,23 @@ export class AILayerCapture {
 
   // A body capture does not scan because it is larger than MAX_CAPTURE_BYTES:
   // `bytes` is its Content-Length, or the bytes capture counted of it, before
-  // decoding when `contentEncoding` is given. `target` is null for a line
-  // written to a child's standard input.
-  private reportOverLimit(target: Target | null, model: boolean, direction: 'request' | 'response', bytes: number, contentEncoding?: string): void {
+  // decoding when `contentEncoding` is given. `atLeast` is set when capture
+  // stopped counting before the end of the body, so `bytes` is not its size.
+  // `target` is null for a line written to a child's standard input.
+  private reportOverLimit(
+    target: Target | null,
+    model: boolean,
+    direction: 'request' | 'response',
+    bytes: number,
+    contentEncoding?: string,
+    atLeast = false,
+  ): void {
     const source: MonitorType = model ? 'prompt' : this.mcp ? 'mcp-protocol' : 'a2a-protocol';
+    const size = `${atLeast ? 'at least ' : ''}${bytes} bytes`;
     const what =
       target === null
-        ? `A line of ${bytes} bytes written to a child's standard input`
-        : `A ${direction} body of ${bytes} bytes${contentEncoding === undefined ? '' : ` in ${contentEncoding}`} ${direction === 'request' ? 'to' : 'from'} ${target.origin}`;
+        ? `A line of ${size} written to a child's standard input`
+        : `A ${direction} body of ${size}${contentEncoding === undefined ? '' : ` in ${contentEncoding}`} ${direction === 'request' ? 'to' : 'from'} ${target.origin}`;
     const why = contentEncoding === undefined ? `larger than ${MAX_CAPTURE_BYTES} bytes` : `it decodes to more than ${MAX_CAPTURE_BYTES} bytes`;
     this.report(source, `${what} was not scanned: ${why}`, {
       reason: 'body-over-limit',
@@ -981,8 +993,12 @@ async function readCapped(stream: ByteStream): Promise<Read | null> {
       if (!value) continue;
       size += value.byteLength;
       if (size > MAX_CAPTURE_BYTES) {
+        // One read more tells whether the body ends with this chunk. When it
+        // does not, the rest is not read, so `size` is a lower bound.
+        const next = await reader.read().catch(() => null);
+        if (next?.done) return { over: size };
         await reader.cancel().catch(() => {});
-        return { over: size };
+        return { over: size, atLeast: true };
       }
       chunks.push(Buffer.from(value));
     }
