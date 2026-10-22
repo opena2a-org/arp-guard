@@ -5,7 +5,7 @@
 //
 // A new-user pass found the section giving two differences while the install
 // brought more: the scanner and a model runtime whose `postinstall` script npm
-// reports and skips, executables in `node_modules/.bin`, and an export surface
+// runs and then reports, executables in `node_modules/.bin`, and an export surface
 // without the two consent functions `main` exports. The section lists each of
 // them, and the count its first paragraph gives is the number of items in that
 // list, so an item added or removed without the count fails here.
