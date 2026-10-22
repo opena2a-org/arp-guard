@@ -56,6 +56,8 @@ The value must be the boolean `false`.
 
 A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
 
+To check that it was read as off, call `arp.getRuntimeTwin()`: on the published engine it returns `null` when the twin is off, and a twin that is on means L2 is on as well.
+
 To keep L2 and the twin while sending nothing off the machine, set `intelligence: { adapter: 'ollama' }` instead, which sends L2 requests only to a local Ollama at `localhost:11434`.
 
 ## Renamed from arp-guard
@@ -119,7 +121,11 @@ prompt high     [DE-001] System prompt extraction — attempting to extract syst
 
 Call `scanInput` on what the agent sends to a model and `scanOutput` on the reply.
 
+On the published engine, an interceptor matches only the first 65,536 characters of the text it gets (for `scanToolCall`, its argument values joined with line feeds), and when there were more, the result of `scanInput`, `scanOutput` or `scanToolCall` has `truncated: true`, that of `scanMessage` has no `truncated` field, and the call emits no event that says so.
+
 An interceptor scans nothing until its own `start()`.
+
+On the published engine, a call made before it returns `{ detected: false, matches: [] }`, which reads as a clean result, and emits no event; `isRunning()` returns `false` until then.
 
 `intelligence: { enabled: false }` keeps the example from sending events off the machine, as [Intelligence Stack](docs/how-it-works.md#intelligence-stack) describes.
 
