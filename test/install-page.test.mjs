@@ -9,10 +9,16 @@
 // without the two consent functions `main` exports. The section lists each of
 // them, and the count its first paragraph gives is the number of items in that
 // list, so an item added or removed without the count fails here.
+//
+// The L2 default, which the section once counted as one of those items, is not
+// a difference: a build of `main` has it too. The section gives it in a
+// paragraph after the list, and an item of the list that gives it fails here.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { root } from './run-as-documented.mjs'
 
@@ -68,6 +74,22 @@ function topLevelItems(prose) {
   return prose.filter((line) => /^([-*+]|\d+[.)]) /.test(line))
 }
 
+// Each of those items as one text, with the lines that continue it: an item
+// runs up to the next one, or up to a line at the margin after a blank line,
+// which starts a paragraph after the list.
+function itemTexts(prose) {
+  const items = []
+  let open = null
+  let blank = false
+  for (const line of prose) {
+    if (/^([-*+]|\d+[.)]) /.test(line)) items.push((open = [line]))
+    else if (blank && /^\S/.test(line)) open = null
+    else if (open && line.trim() !== '') open.push(line)
+    blank = line.trim() === ''
+  }
+  return items.map((lines) => lines.join(' ').replace(/\s+/g, ' '))
+}
+
 function sentences(prose) {
   return prose.join(' ').replace(/\s+/g, ' ').split(/(?<=[.!?]) (?=\S)/)
 }
@@ -78,6 +100,11 @@ test('the items counted are the top-level list items outside code blocks', () =>
   const lines = ['## A', 'Text.', '', '- first', '  - nested', '* second', '1. third', '```text', '- in a code block', '```', '## B', '- other']
   const { prose } = section(lines, '## A')
   assert.deepEqual(topLevelItems(prose), ['- first', '* second', '1. third'])
+})
+
+test('an item runs up to the next item or up to a paragraph after the list', () => {
+  const prose = ['Text.', '', '- first', 'wrapped', '  - nested', '', '  more of first', '* second', '', 'After the list.']
+  assert.deepEqual(itemTexts(prose), ['- first wrapped - nested more of first', '* second'])
 })
 
 test('the section says that the install brings a model runtime with a postinstall script that npm reports', () => {
@@ -105,4 +132,21 @@ test('the number of differences the section gives is the number of items in its 
   const said = NUMBER_WORDS.indexOf(count[1])
   assert.notEqual(said, -1, `the count "${count[1]}" is not written as a number word`)
   assert.equal(topLevelItems(delivers.prose).length, said, `the section says ${count[1]} ways and lists another number`)
+})
+
+// Run against the build: with no `intelligence` block in the config, the engine
+// `main` pins chooses an adapter, which it does only while L2 is on.
+test('the L2 default, which `main` has as well, is not an item of the list of differences', (t) => {
+  const { AgentRuntimeProtection } = createRequire(import.meta.url)('../dist/index.js')
+  const dataDir = mkdtempSync(join(tmpdir(), 'arp-guard-install-'))
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }))
+  const arp = new AgentRuntimeProtection({ agentName: 'my-agent', dataDir })
+  assert.ok(arp.getIntelligence().adapter, 'a build of `main` leaves L2 off with no `intelligence` block, so the L2 default is a way 0.3.0 differs from it')
+
+  const listed = itemTexts(delivers.prose).filter((item) => /\bL2\b/.test(item))
+  assert.deepEqual(listed, [], 'an item of the list gives the L2 default as a way 0.3.0 differs from `main`')
+  const said = sentences(delivers.prose).find(
+    (sentence) => /\bL2 default\b/.test(sentence) && /\bsame\b/.test(sentence) && sentence.includes('`main`'),
+  )
+  assert.ok(said, 'no sentence of the section says that the L2 default is the same on `main`')
 })
