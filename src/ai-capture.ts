@@ -149,9 +149,9 @@ type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunctio
 // `atProxyHost`: a request to the host reaches a listener on 127.0.0.1, the
 // address ARP's proxy listens on.
 type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean };
-// The target capture scans a request as sent to, and whether ARP's proxy
-// passes the request on to it and scans the reply.
-type Route = { target: Target; proxied: boolean };
+// The target capture scans a request as sent to, whether it is a model API
+// host, and whether ARP's proxy passes the request on to it and scans the reply.
+type Route = { target: Target; model: boolean; proxied: boolean };
 type HostRule = { host: string; port: string | null; suffix: boolean };
 type ByteReader = {
   read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -224,16 +224,24 @@ export class AILayerCapture {
     return this.active && !isArpOwnWork();
   }
 
-  // How capture scans a request to `target`: null when it leaves the request
-  // to ARP's proxy. The proxy answers a request it routes to no upstream with
-  // 404 and passes it on to none.
-  private route(target: Target): Route | null {
-    if (target.port !== this.proxyPort || !target.atProxyHost) {
-      return { target, proxied: false };
+  // How capture scans a request to `requested`: null when it does not, as when
+  // it leaves the request to ARP's proxy. The proxy answers a request it routes
+  // to no upstream with 404 and passes it on to none. To a host other than a
+  // model API's, capture scans a request for the MCP and A2A interceptors
+  // alone, so with neither on, it does not read the body, nor report one larger
+  // than MAX_CAPTURE_BYTES.
+  private route(requested: Target): Route | null {
+    let target = requested;
+    let proxied = false;
+    if (target.port === this.proxyPort && target.atProxyHost) {
+      const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
+      if (!upstream || PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
+      target = fetchTarget(upstream.target) ?? target;
+      proxied = true;
     }
-    const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
-    if (!upstream || PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
-    return { target: fetchTarget(upstream.target) ?? target, proxied: true };
+    const model = this.isModelHost(target);
+    if (!model && !this.mcp && !this.a2a) return null;
+    return { target, model, proxied };
   }
 
   async start(): Promise<void> {
@@ -312,10 +320,7 @@ export class AILayerCapture {
     try {
       const requested = fetchTarget(args[0]);
       const route = requested && this.route(requested);
-      if (route) {
-        const model = this.isModelHost(route.target);
-        request = { target: route.target, model, proxied: route.proxied, body: fetchBody(args[0], args[1], model) };
-      }
+      if (route) request = { ...route, body: fetchBody(args[0], args[1], route.model) };
     } catch {
       // Capture never stands between the agent and its request.
     }
@@ -354,9 +359,7 @@ export class AILayerCapture {
     const requested = requestTarget(args, protocol);
     const route = requested && this.route(requested);
     if (!route) return;
-    const { target, proxied } = route;
-    const model = this.isModelHost(target);
-    if (!model && !this.mcp && !this.a2a) return;
+    const { target, model, proxied } = route;
     const self = this;
 
     if (!req.writableEnded) {
