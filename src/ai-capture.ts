@@ -20,6 +20,11 @@
  * own errors. A body it cannot read without consuming it, or larger than
  * MAX_CAPTURE_BYTES, is not scanned. What an output pattern matches in a model
  * reply is masked in the event it reports.
+ *
+ * For a body it does not scan because it is larger than MAX_CAPTURE_BYTES, and
+ * for a text the engine matched only the first ENGINE_SCAN_CHARACTERS of,
+ * capture reports an `info` event with the reason and the lengths, and none of
+ * the text.
  */
 import http = require('http');
 import https = require('https');
@@ -30,7 +35,9 @@ import {
   A2AProtocolInterceptor,
   MCPProtocolInterceptor,
   PromptInterceptor,
+  scanText,
   type EventEngine,
+  type MonitorType,
 } from '@opena2a/aim-sdk/arp';
 
 /**
@@ -55,6 +62,13 @@ export const DEFAULT_MODEL_API_HOSTS: readonly string[] = Object.freeze([
 
 /** Bodies, and stdio lines, larger than this many bytes are not scanned. */
 export const MAX_CAPTURE_BYTES = 1024 * 1024;
+
+/**
+ * The characters of a text the engine matches its patterns against: `scanText`
+ * in `@opena2a/aim-sdk` 1.3.1 takes the first 65,536 and sets `truncated` in
+ * its result when the text is longer.
+ */
+export const ENGINE_SCAN_CHARACTERS = 64 * 1024;
 
 /** The part of the config capture reads. */
 export interface CaptureConfig {
@@ -146,8 +160,16 @@ type NodeStream = { on(event: string, listener: (...args: unknown[]) => void): u
 type HeadersLike = { get(name: string): string | null };
 type FetchResponse = { body: unknown; headers: HeadersLike; clone(): FetchResponse };
 type EngineEvent = Parameters<EventEngine['emit']>[0];
+// A body capture read whole, or the bytes it counted of one larger than
+// MAX_CAPTURE_BYTES before it stopped.
+type Read = { bytes: Buffer } | { over: number };
+// The text of a request body capture scans, the bytes it counted of one it does
+// not scan because it is larger than MAX_CAPTURE_BYTES, or null for a body it
+// does not scan for another reason.
+type Body = string | { over: number } | null;
 
 export class AILayerCapture {
+  private readonly engine: EventEngine;
   private readonly agentName: string;
   private readonly prompt: PromptInterceptor | null;
   private readonly mcp: MCPProtocolInterceptor | null;
@@ -162,6 +184,7 @@ export class AILayerCapture {
 
   constructor(engine: EventEngine, config: CaptureConfig) {
     const al = config.aiLayer;
+    this.engine = engine;
     this.agentName = config.agentName;
     // Off unless `capture: true`: capture runs the engine's patterns on the
     // agent's thread, in the call that sends a request or writes a line, and
@@ -282,7 +305,7 @@ export class AILayerCapture {
   // request back. Capture reads what it scans from the arguments before that
   // call, and the body of a Request from a copy, which it scans once whole.
   private captureFetch(original: AnyFunction, thisArg: unknown, args: unknown[]): unknown {
-    let request: { target: Target; model: boolean; proxied: boolean; body: string | Promise<string | null> | null } | null = null;
+    let request: { target: Target; model: boolean; proxied: boolean; body: Body | Promise<Body> } | null = null;
     try {
       const requested = fetchTarget(args[0]);
       const route = requested && this.route(requested);
@@ -296,27 +319,31 @@ export class AILayerCapture {
     if (request === null) return original.apply(thisArg, args);
     const result = capturedFetch.run(true, () => original.apply(thisArg, args));
     const { target, model, proxied, body } = request;
-    if (typeof body === 'string') {
-      safely(() => this.scanRequest(target, model, body));
-    } else if (body !== null) {
-      void body.then((text) => {
-        if (text !== null) safely(() => this.scanRequest(target, model, text));
-      });
-    }
+    if (body instanceof Promise) void body.then((read) => this.takeRequest(target, model, read));
+    else this.takeRequest(target, model, body);
     // ARP's proxy scans the reply to a request it passes on.
     if (!model || proxied || !isPromiseLike(result)) return result;
     return result.then((response) => {
-      safely(() => this.watchFetchResponse(response as FetchResponse));
+      safely(() => this.watchFetchResponse(target, response as FetchResponse));
       return response;
     });
   }
 
-  private watchFetchResponse(response: FetchResponse): void {
+  // Scans a request body, or reports one that is too large to scan.
+  private takeRequest(target: Target, model: boolean, body: Body): void {
+    if (typeof body === 'string') safely(() => this.scanRequest(target, model, body));
+    else if (body !== null) safely(() => this.reportOverLimit(target, model, 'request', body.over));
+  }
+
+  private watchFetchResponse(target: Target, response: FetchResponse): void {
     if (!response || response.body === null || response.body === undefined) return;
     // A reply over the limit is not scanned, so it is not copied either.
-    if (Number(response.headers.get('content-length')) > MAX_CAPTURE_BYTES) return;
-    void readCopy(response.clone().body).then((bytes) => {
-      if (bytes) safely(() => this.scanResponse(bytes.toString('utf8')));
+    const length = Number(response.headers.get('content-length'));
+    if (length > MAX_CAPTURE_BYTES) return this.reportOverLimit(target, true, 'response', length);
+    void readCopy(response.clone().body).then((read) => {
+      if (read === null) return;
+      if ('over' in read) safely(() => this.reportOverLimit(target, true, 'response', read.over));
+      else safely(() => this.scanResponse(read.bytes.toString('utf8')));
     });
   }
 
@@ -345,7 +372,9 @@ export class AILayerCapture {
             safely(() => {
               if (typeof endArgs[0] !== 'function') body.add(endArgs[0], endArgs[1]);
               const text = body.text();
+              const over = body.over();
               if (text !== null) self.scanRequest(target, model, text);
+              else if (over !== null) self.reportOverLimit(target, model, 'request', over);
             });
           }
         }
@@ -362,7 +391,7 @@ export class AILayerCapture {
       const emit = req.emit as unknown as AnyFunction;
       req.emit = function (this: unknown, ...emitArgs: unknown[]) {
         if (emitArgs[0] !== 'response' || !self.active) return emit.apply(this, emitArgs);
-        const watched = attempt(() => self.watchIncoming(emitArgs[1] as http.IncomingMessage));
+        const watched = attempt(() => self.watchIncoming(target, emitArgs[1] as http.IncomingMessage));
         const taken = emit.apply(this, emitArgs);
         if (!taken) watched?.ignore();
         return taken;
@@ -372,7 +401,7 @@ export class AILayerCapture {
 
   // Observes the chunks the agent reads from the response, through `emit`, so
   // the stream keeps the mode and the pace the agent's own reads give it.
-  private watchIncoming(res: http.IncomingMessage): { ignore(): void } {
+  private watchIncoming(target: Target, res: http.IncomingMessage): { ignore(): void } {
     const self = this;
     const body = new BodyCollector(false);
     const emit = res.emit as unknown as AnyFunction;
@@ -386,8 +415,12 @@ export class AILayerCapture {
           done = true;
           if (self.active) {
             safely(() => {
-              const text = decodeBody(body.bytes(), res.headers['content-encoding']);
-              if (text !== null) self.scanResponse(text);
+              const over = body.over();
+              if (over !== null) return self.reportOverLimit(target, true, 'response', over);
+              const encoding = res.headers['content-encoding'];
+              const text = decodeBody(body.bytes(), encoding);
+              if (typeof text === 'string') self.scanResponse(text);
+              else if (text === TOO_LARGE) self.reportOverLimit(target, true, 'response', body.size(), encoding);
             });
           }
         } else if (event === 'close' || event === 'error') {
@@ -405,38 +438,41 @@ export class AILayerCapture {
 
   // An MCP stdio client writes one JSON-RPC message per line. A line feed
   // byte never occurs inside a multi-byte UTF-8 sequence, so lines are cut on
-  // bytes and each is decoded whole.
+  // bytes and each is decoded whole. A line larger than MAX_CAPTURE_BYTES is
+  // counted, not kept, and reported when it starts as JSON.
   private watchChildStdin(child: childProcess.ChildProcess): void {
     const stdin = child?.stdin;
     if (!stdin) return;
     const self = this;
     let parts: Buffer[] = [];
     let size = 0;
-    let discarding = false;
+    // The first character of the line other than white space.
+    let first: string | null = null;
+    const add = (bytes: Buffer): void => {
+      if (first === null) first = firstNonSpace(bytes);
+      size += bytes.length;
+      if (size <= MAX_CAPTURE_BYTES) parts.push(bytes);
+      else parts = [];
+    };
+    const endLine = (): void => {
+      if (size > MAX_CAPTURE_BYTES) {
+        if (first === '{' || first === '[') safely(() => self.reportOverLimit(null, false, 'request', size));
+      } else if (parts.length > 0) {
+        const line = Buffer.concat(parts).toString('utf8');
+        safely(() => self.scanStdioLine(line));
+      }
+      parts = [];
+      size = 0;
+      first = null;
+    };
     const take = (chunk: unknown, encoding: unknown): void => {
       let bytes = toBuffer(chunk, encoding);
       if (!bytes) return;
       for (;;) {
         const newline = bytes.indexOf(0x0a);
-        if (newline === -1) {
-          if (discarding) return;
-          parts.push(bytes);
-          size += bytes.length;
-          if (size > MAX_CAPTURE_BYTES) {
-            parts = [];
-            size = 0;
-            discarding = true;
-          }
-          return;
-        }
-        if (!discarding && size + newline <= MAX_CAPTURE_BYTES) {
-          parts.push(bytes.subarray(0, newline));
-          const line = Buffer.concat(parts).toString('utf8');
-          safely(() => self.scanStdioLine(line));
-        }
-        parts = [];
-        size = 0;
-        discarding = false;
+        if (newline === -1) return add(bytes);
+        add(bytes.subarray(0, newline));
+        endLine();
         bytes = bytes.subarray(newline + 1);
       }
     };
@@ -451,9 +487,7 @@ export class AILayerCapture {
       if (!ending && self.active) {
         safely(() => {
           if (endArgs.length > 0 && typeof endArgs[0] !== 'function') take(endArgs[0], endArgs[1]);
-          if (!discarding && parts.length > 0 && size <= MAX_CAPTURE_BYTES) self.scanStdioLine(Buffer.concat(parts).toString('utf8'));
-          parts = [];
-          size = 0;
+          endLine();
         });
       }
       ending = true;
@@ -470,7 +504,9 @@ export class AILayerCapture {
     const body = parseJson(text);
     if (body === undefined) return;
     if (model && this.prompt) {
-      for (const input of promptInputs(body)) this.prompt.scanInput(input);
+      for (const input of promptInputs(body)) {
+        if (this.prompt.scanInput(input).truncated) this.reportTruncated('prompt', 'the input', input.length, { direction: 'input' });
+      }
     }
     this.scanJsonRpc(body, target.origin);
   }
@@ -478,7 +514,9 @@ export class AILayerCapture {
   private scanResponse(text: string): void {
     if (!this.prompt) return;
     const output = promptOutputs(text);
-    if (output.trim() !== '') this.prompt.scanOutput(output);
+    if (output.trim() !== '' && this.prompt.scanOutput(output).truncated) {
+      this.reportTruncated('prompt', 'the output', output.length, { direction: 'output' });
+    }
   }
 
   private scanStdioLine(line: string): void {
@@ -492,23 +530,70 @@ export class AILayerCapture {
       if (!isRecord(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') continue;
       const params = message.params;
       if (this.mcp && message.method === 'tools/call' && isRecord(params) && typeof params.name === 'string') {
-        this.mcp.scanToolCall(params.name, isRecord(params.arguments) ? params.arguments : {});
+        const toolName = params.name;
+        const args = isRecord(params.arguments) ? params.arguments : {};
+        if (this.mcp.scanToolCall(toolName, args).truncated) {
+          this.reportTruncated('mcp-protocol', `the arguments of tool "${toolName}"`, argumentsLength(args), { toolName });
+        }
       } else if (this.a2a && to !== null && A2A_METHODS.has(message.method)) {
         const text = a2aText(params);
-        if (text.trim() !== '') this.a2a.scanMessage(this.agentName, to, text);
+        if (text.trim() === '') continue;
+        this.a2a.scanMessage(this.agentName, to, text);
+        // The result of `scanMessage` carries no `truncated`; `scanText` with
+        // no patterns gives the one the engine's scans of the message had.
+        if (scanText(text, []).truncated) {
+          this.reportTruncated('a2a-protocol', `the message to ${to}`, text.length, { from: this.agentName, to });
+        }
       }
     }
   }
+
+  // A body capture does not scan because it is larger than MAX_CAPTURE_BYTES:
+  // `bytes` is its Content-Length, or the bytes capture counted of it, before
+  // decoding when `contentEncoding` is given. `target` is null for a line
+  // written to a child's standard input.
+  private reportOverLimit(target: Target | null, model: boolean, direction: 'request' | 'response', bytes: number, contentEncoding?: string): void {
+    const source: MonitorType = model ? 'prompt' : this.mcp ? 'mcp-protocol' : 'a2a-protocol';
+    const what =
+      target === null
+        ? `A line of ${bytes} bytes written to a child's standard input`
+        : `A ${direction} body of ${bytes} bytes${contentEncoding === undefined ? '' : ` in ${contentEncoding}`} ${direction === 'request' ? 'to' : 'from'} ${target.origin}`;
+    const why = contentEncoding === undefined ? `larger than ${MAX_CAPTURE_BYTES} bytes` : `it decodes to more than ${MAX_CAPTURE_BYTES} bytes`;
+    this.report(source, `${what} was not scanned: ${why}`, {
+      reason: 'body-over-limit',
+      direction,
+      origin: target?.origin ?? null,
+      bytes,
+      limitBytes: MAX_CAPTURE_BYTES,
+      ...(contentEncoding === undefined ? {} : { contentEncoding }),
+    });
+  }
+
+  // A text the engine matched only the first ENGINE_SCAN_CHARACTERS of.
+  private reportTruncated(source: MonitorType, what: string, contentLength: number, data: Record<string, unknown>): void {
+    this.report(source, `Only the first ${ENGINE_SCAN_CHARACTERS} of the ${contentLength} characters of ${what} were scanned`, {
+      reason: 'scan-truncated',
+      ...data,
+      contentLength,
+      scannedLength: ENGINE_SCAN_CHARACTERS,
+    });
+  }
+
+  // The event carries the reason and the lengths, and none of the text. It is
+  // `normal`, at `info`, so no default rule matches it.
+  private report(source: MonitorType, description: string, data: Record<string, unknown>): void {
+    void this.engine.emit({ source, category: 'normal', severity: 'info', description, data }).catch(() => {});
+  }
 }
 
-// Collects a body as it is written or read, up to MAX_CAPTURE_BYTES. With
-// `jsonOnly`, a body whose first character other than white space is not `{`
-// or `[` is dropped at once, so a request that cannot carry JSON-RPC is not
-// held.
+// Collects a body as it is written or read, up to MAX_CAPTURE_BYTES; past that
+// it counts the bytes and keeps none. With `jsonOnly`, a body whose first
+// character other than white space is not `{` or `[` is dropped at once, so a
+// request that cannot carry JSON-RPC is not held.
 class BodyCollector {
   private chunks: Buffer[] = [];
-  private size = 0;
-  private state: 'sniff' | 'collect' | 'skip';
+  private count = 0;
+  private state: 'sniff' | 'collect' | 'over' | 'skip';
 
   constructor(jsonOnly: boolean) {
     this.state = jsonOnly ? 'sniff' : 'collect';
@@ -516,6 +601,10 @@ class BodyCollector {
 
   add(chunk: unknown, encoding?: unknown): void {
     if (this.state === 'skip' || chunk === undefined || chunk === null) return;
+    if (this.state === 'over') {
+      this.count += byteLength(chunk, encoding);
+      return;
+    }
     const bytes = toBuffer(chunk, encoding);
     if (!bytes) return this.skip();
     if (bytes.length === 0) return;
@@ -524,23 +613,39 @@ class BodyCollector {
       if (first !== null && first !== '{' && first !== '[') return this.skip();
       if (first !== null) this.state = 'collect';
     }
-    this.size += bytes.length;
-    if (this.size > MAX_CAPTURE_BYTES) return this.skip();
+    this.count += bytes.length;
+    if (this.count > MAX_CAPTURE_BYTES) {
+      // White space alone so far: no JSON in the part capture would scan.
+      if (this.state === 'sniff') return this.skip();
+      this.state = 'over';
+      this.chunks = [];
+      return;
+    }
     this.chunks.push(bytes);
   }
 
   bytes(): Buffer | null {
-    return this.state === 'skip' || this.size === 0 ? null : Buffer.concat(this.chunks);
+    return this.state === 'skip' || this.state === 'over' || this.count === 0 ? null : Buffer.concat(this.chunks);
   }
 
   text(): string | null {
     return this.bytes()?.toString('utf8') ?? null;
   }
 
+  /** The bytes counted. */
+  size(): number {
+    return this.count;
+  }
+
+  /** The bytes counted of a body larger than MAX_CAPTURE_BYTES, or null. */
+  over(): number | null {
+    return this.state === 'over' ? this.count : null;
+  }
+
   private skip(): void {
     this.state = 'skip';
     this.chunks = [];
-    this.size = 0;
+    this.count = 0;
   }
 }
 
@@ -757,23 +862,30 @@ function requestTarget(args: unknown[], fallbackProtocol: string): Target | null
 // The body of a fetch request, read during the agent's call: from the options
 // at once, when it is a string or bytes there; from a copy of the body of a
 // Request the agent passes with no body in the options, as that copy is read.
-function fetchBody(input: unknown, init: unknown, model: boolean): string | Promise<string | null> | null {
+function fetchBody(input: unknown, init: unknown, model: boolean): Body | Promise<Body> {
   const body = isRecord(init) ? init.body : undefined;
-  if (body !== undefined && body !== null) return requestText(toBuffer(body, undefined), model);
+  if (body !== undefined && body !== null) return requestBody(toBuffer(body, undefined), model);
   if (!isRequestWithBody(input)) return null;
   if (!model && !/json/i.test(input.headers.get('content-type') ?? '')) return null;
-  if (Number(input.headers.get('content-length')) > MAX_CAPTURE_BYTES) return null;
+  const length = Number(input.headers.get('content-length'));
+  if (length > MAX_CAPTURE_BYTES) return { over: length };
   return readCopy(input.clone().body).then(
-    (bytes) => requestText(bytes, model),
+    (read) => (read === null || 'over' in read ? read : requestBody(read.bytes, model)),
     () => null,
   );
 }
 
-function requestText(bytes: Buffer | null, model: boolean): string | null {
-  if (bytes === null || bytes.length > MAX_CAPTURE_BYTES) return null;
-  const text = bytes.toString('utf8');
-  if (!model && !/^\s*[[{]/.test(text)) return null;
-  return text;
+// To a host other than a model API's, a body that does not start as JSON
+// cannot carry JSON-RPC, and is not scanned.
+function requestBody(bytes: Buffer | null, model: boolean): Body {
+  if (bytes === null || (!model && !startsAsJson(bytes))) return null;
+  if (bytes.length > MAX_CAPTURE_BYTES) return { over: bytes.length };
+  return bytes.toString('utf8');
+}
+
+function startsAsJson(bytes: Buffer): boolean {
+  const first = firstNonSpace(bytes);
+  return first === '{' || first === '[';
 }
 
 // A Request of fetch or of another implementation, such as node-fetch, with a
@@ -789,8 +901,8 @@ function isRequestWithBody(input: unknown): input is { headers: HeadersLike; bod
 // cancelled past that, which leaves the original to the agent. A Node stream,
 // as node-fetch gives, is read to its end: node-fetch pipes the body into the
 // original and the copy alike, and the original moves on only as fast as the
-// copy is read.
-function readCopy(stream: unknown): Promise<Buffer | null> {
+// copy is read. Null when the copy cannot be read to its end.
+function readCopy(stream: unknown): Promise<Read | null> {
   if (isRecord(stream) && typeof stream.getReader === 'function') return readCapped(stream as unknown as ByteStream);
   if (isRecord(stream) && typeof stream.on === 'function' && typeof stream.once === 'function') {
     return drainCapped(stream as unknown as NodeStream);
@@ -798,24 +910,24 @@ function readCopy(stream: unknown): Promise<Buffer | null> {
   return Promise.resolve(null);
 }
 
-function drainCapped(stream: NodeStream): Promise<Buffer | null> {
+function drainCapped(stream: NodeStream): Promise<Read | null> {
   return new Promise((resolve) => {
     let chunks: Buffer[] | null = [];
     let size = 0;
     stream.on('data', (chunk) => {
+      size += byteLength(chunk, undefined);
       if (chunks === null) return;
       const bytes = toBuffer(chunk, undefined);
-      size += bytes?.length ?? 0;
       if (bytes && size <= MAX_CAPTURE_BYTES) chunks.push(bytes);
       else chunks = null;
     });
-    stream.once('end', () => resolve(chunks && Buffer.concat(chunks)));
+    stream.once('end', () => resolve(chunks ? { bytes: Buffer.concat(chunks) } : size > MAX_CAPTURE_BYTES ? { over: size } : null));
     stream.once('error', () => resolve(null));
     stream.once('close', () => resolve(null));
   });
 }
 
-async function readCapped(stream: ByteStream): Promise<Buffer | null> {
+async function readCapped(stream: ByteStream): Promise<Read | null> {
   let reader: ByteReader;
   try {
     reader = stream.getReader();
@@ -832,7 +944,7 @@ async function readCapped(stream: ByteStream): Promise<Buffer | null> {
       size += value.byteLength;
       if (size > MAX_CAPTURE_BYTES) {
         await reader.cancel().catch(() => {});
-        return null;
+        return { over: size };
       }
       chunks.push(Buffer.from(value));
     }
@@ -845,12 +957,15 @@ async function readCapped(stream: ByteStream): Promise<Buffer | null> {
       // Already released by the cancel above.
     }
   }
-  return Buffer.concat(chunks);
+  return { bytes: Buffer.concat(chunks) };
 }
+
+// What decodeBody gives for a body that decodes to more than MAX_CAPTURE_BYTES.
+const TOO_LARGE = Symbol('too large');
 
 // A response the agent read compressed, as `http` hands it over, is
 // decompressed here, with the output held to MAX_CAPTURE_BYTES.
-function decodeBody(bytes: Buffer | null, contentEncoding: string | undefined): string | null {
+function decodeBody(bytes: Buffer | null, contentEncoding: string | undefined): string | typeof TOO_LARGE | null {
   if (!bytes) return null;
   const encoding = (contentEncoding ?? '').trim().toLowerCase();
   const limit = { maxOutputLength: MAX_CAPTURE_BYTES };
@@ -861,14 +976,45 @@ function decodeBody(bytes: Buffer | null, contentEncoding: string | undefined): 
     if (encoding === 'deflate') {
       try {
         return zlib.inflateSync(bytes, limit).toString('utf8');
-      } catch {
+      } catch (error) {
+        if (isTooLarge(error)) throw error;
         return zlib.inflateRawSync(bytes, limit).toString('utf8');
       }
     }
-  } catch {
-    return null;
+  } catch (error) {
+    return isTooLarge(error) ? TOO_LARGE : null;
   }
   return null;
+}
+
+// The error zlib throws when its output would pass `maxOutputLength`.
+function isTooLarge(error: unknown): boolean {
+  return error instanceof RangeError && (error as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE';
+}
+
+// The length of the text the engine's MCP interceptor scans for a tool call:
+// the argument values joined with line feeds, as `flattenArgs` in
+// `@opena2a/aim-sdk` 1.3.1 joins them. A string, number or boolean is one
+// value, an array gives its strings and its objects, and an object is joined
+// the same way, to a depth of 10.
+function argumentsLength(args: object, depth = 0): number {
+  if (depth > 10) return 0;
+  const lengths: number[] = [];
+  for (const value of Object.values(args)) {
+    if (typeof value === 'string') {
+      lengths.push(value.length);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      lengths.push(String(value).length);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'string') lengths.push(item.length);
+        else if (typeof item === 'object' && item !== null) lengths.push(argumentsLength(item, depth + 1));
+      }
+    } else if (typeof value === 'object' && value !== null) {
+      lengths.push(argumentsLength(value, depth + 1));
+    }
+  }
+  return lengths.reduce((sum, length) => sum + length, 0) + Math.max(lengths.length - 1, 0);
 }
 
 // Strings, Buffers, typed arrays, DataViews and ArrayBuffers, copied, so a
@@ -880,6 +1026,15 @@ function toBuffer(chunk: unknown, encoding: unknown): Buffer | null {
   if (ArrayBuffer.isView(chunk)) return Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
   if (chunk instanceof ArrayBuffer) return Buffer.from(new Uint8Array(chunk));
   return null;
+}
+
+// The number of bytes toBuffer gives for a chunk, without the copy.
+function byteLength(chunk: unknown, encoding: unknown): number {
+  if (typeof chunk === 'string') {
+    return Buffer.byteLength(chunk, typeof encoding === 'string' && Buffer.isEncoding(encoding) ? encoding : 'utf8');
+  }
+  if (ArrayBuffer.isView(chunk) || chunk instanceof ArrayBuffer) return chunk.byteLength;
+  return 0;
 }
 
 function firstNonSpace(bytes: Buffer): string | null {

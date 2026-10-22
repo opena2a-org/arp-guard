@@ -29,6 +29,8 @@ This was measured to stop the outbound call on `@opena2a/aim-sdk@1.3.1`, the ver
 
 The value must be the boolean `false`. A string (`"false"`, `"no"`, `"0"`) or the number `0` is not read as off: on the published engine it leaves L2 and the twin on, exactly as the default does, and a future engine release refuses such a value at construction.
 
+To check that it was read as off, call `arp.getRuntimeTwin()`: on the published engine it returns `null` when the twin is off, and a twin that is on means L2 is on as well.
+
 `main` currently pins an SDK that carries the same L2 default; the [Intelligence stack](how-it-works.md#intelligence-stack) section describes it.
 
 ## Renamed from arp-guard
