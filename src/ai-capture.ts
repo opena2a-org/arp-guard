@@ -28,6 +28,7 @@
  */
 import http = require('http');
 import https = require('https');
+import net = require('net');
 import childProcess = require('child_process');
 import zlib = require('zlib');
 import { AsyncLocalStorage } from 'async_hooks';
@@ -145,7 +146,9 @@ const INPUT_ROLES = new Set(['user', 'tool', 'function']);
 
 type AnyFunction = (this: unknown, ...args: unknown[]) => unknown;
 type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunction; wrapper: AnyFunction };
-type Target = { hostname: string; port: string; origin: string; path: string };
+// `atProxyHost`: a request to the host reaches a listener on 127.0.0.1, the
+// address ARP's proxy listens on.
+type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean };
 // The target capture scans a request as sent to, and whether ARP's proxy
 // passes the request on to it and scans the reply.
 type Route = { target: Target; proxied: boolean };
@@ -205,11 +208,11 @@ export class AILayerCapture {
   }
 
   /**
-   * Leaves a request to ARP's proxy, on 127.0.0.1 or localhost at `port`, to
-   * the proxy, which scans it, unless `proxy.upstreams` routes it to an
-   * upstream whose requests the proxy does not scan, such as a `passthrough`
-   * one. Capture scans that request as sent to the upstream's `target`, and
-   * leaves its reply to the proxy.
+   * Leaves a request to ARP's proxy, on 127.0.0.1 at `port`, to the proxy: one
+   * to `port` at a host `reachesProxyHost` accepts. The proxy scans it, unless
+   * `proxy.upstreams` routes it to an upstream whose requests the proxy does
+   * not scan, such as a `passthrough` one. Capture scans that request as sent
+   * to the upstream's `target`, and leaves its reply to the proxy.
    */
   leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
     this.proxyPort = port === null ? null : String(port);
@@ -225,7 +228,7 @@ export class AILayerCapture {
   // to ARP's proxy. The proxy answers a request it routes to no upstream with
   // 404 and passes it on to none.
   private route(target: Target): Route | null {
-    if (target.port !== this.proxyPort || (target.hostname !== '127.0.0.1' && target.hostname !== 'localhost')) {
+    if (target.port !== this.proxyPort || !target.atProxyHost) {
       return { target, proxied: false };
     }
     const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
@@ -800,11 +803,43 @@ function defaultPort(protocol: string): string {
   return protocol === 'https:' ? '443' : '80';
 }
 
+// `host` is the host the request connects to: the `hostname` or `host` option
+// as given, or the host of a URL, with the brackets around an IPv6 address
+// removed, as fetch and `http` remove them.
 // `path` is the path and query the request line carries.
-function makeTarget(protocol: string, hostname: string, port: string, path: string): Target {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  const shown = host.includes(':') ? `[${host}]` : host;
-  return { hostname: host, port, origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}`, path };
+function makeTarget(protocol: string, host: string, port: string, path: string): Target {
+  const hostname = host.replace(/^\[|\]$/g, '').toLowerCase();
+  const shown = hostname.includes(':') ? `[${hostname}]` : hostname;
+  return {
+    hostname,
+    port,
+    origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}`,
+    path,
+    atProxyHost: reachesProxyHost(host.toLowerCase()),
+  };
+}
+
+function urlHost(url: URL): string {
+  return url.hostname.replace(/^\[(.*)\]$/, '$1');
+}
+
+// The addresses, as the URL parser writes them, at which a request reaches a
+// listener on 127.0.0.1: that address, and 0.0.0.0, a request to which
+// reaches it on macOS and Linux, each also as an IPv4-mapped IPv6 address.
+const PROXY_HOST_ADDRESSES = new Set(['127.0.0.1', '0.0.0.0', '[::ffff:7f00:1]', '[::ffff:0:0]']);
+
+// True for the name localhost, and for an address `net.isIP` accepts, which
+// Node connects to as written, in PROXY_HOST_ADDRESSES. Node passes a host
+// `net.isIP` refuses to the system's resolver, which need not read it as the
+// URL parser does: as the `hostname` option of `http.request` on macOS,
+// 0177.0.0.1 does not reach a listener on 127.0.0.1, though the URL parser
+// reads it as 127.0.0.1.
+function reachesProxyHost(host: string): boolean {
+  if (host === 'localhost') return true;
+  const family = net.isIP(host);
+  if (family === 0) return false;
+  const address = attempt(() => new URL(`http://${family === 6 ? `[${host}]` : host}/`).hostname);
+  return address !== null && PROXY_HOST_ADDRESSES.has(address);
 }
 
 function fetchTarget(input: unknown): Target | null {
@@ -815,7 +850,7 @@ function fetchTarget(input: unknown): Target | null {
   else return null;
   try {
     const url = new URL(href);
-    return makeTarget(url.protocol, url.hostname, url.port || defaultPort(url.protocol), url.pathname + url.search);
+    return makeTarget(url.protocol, urlHost(url), url.port || defaultPort(url.protocol), url.pathname + url.search);
   } catch {
     return null;
   }
@@ -849,7 +884,7 @@ function requestTarget(args: unknown[], fallbackProtocol: string): Target | null
   const hostname =
     (typeof options.hostname === 'string' && options.hostname) ||
     (typeof options.host === 'string' && options.host) ||
-    url?.hostname ||
+    (url && urlHost(url)) ||
     'localhost';
   const port =
     options.port !== undefined && options.port !== null && options.port !== ''
