@@ -61,11 +61,11 @@ A request whose path starts with the `pathPrefix` of an entry in `proxy.upstream
 - `openai-api`: the prompt interceptor's `scanInput` gets each `user` message in `messages` whose content is a string, and its `scanOutput` the content of each choice's message in the reply.
 - `mcp-http`: the MCP interceptor's `scanToolCall` gets the tool name and arguments of a JSON-RPC `tools/call`, and applies `aiLayer.mcp.allowedTools`. The text parts of the result in the reply, or its error message, go to `scanOutput`.
 - `a2a`: the A2A interceptor's `scanMessage` gets the message, as sent from the body's `from` to its `to`, and applies `aiLayer.a2a.trustedAgents`. The reply's `content` or `message` goes to `scanOutput`.
-- `passthrough`: the reply, up to 100 KB, goes to `scanOutput`. The request is not scanned.
+- `passthrough`: the reply, up to 100 KB, goes to `scanOutput`. The proxy does not scan the request; with `capture: true`, capture does, as said below.
 
 The replies go to the prompt interceptor, so they are scanned when `aiLayer.prompt` is enabled. A body the proxy reads as JSON for `openai-api`, `mcp-http` or `a2a` that is not JSON, such as an MCP reply streamed as server-sent events, is reported as a `Policy parse failure` event from `prompt`, at `high`. What an output pattern matches in a reply is masked in the event, as with capture. The proxy passes on a request it finds a match in and reports the match; with `blockOnDetection: true` it answers that request with 403 and does not pass it on.
 
-With `capture: true` set as well, capture leaves a request the agent sends to the proxy, at `127.0.0.1` or `localhost` and the proxy's port, to the proxy, and does not scan the request the proxy sends to the upstream, so each is scanned once. The proxy scans on the agent's thread, as capture does.
+With `capture: true` set as well, capture leaves a request the agent sends to the proxy, at `127.0.0.1` or `localhost` and the proxy's port, to the proxy, and does not scan the request the proxy sends to the upstream, so each is scanned once. A request whose path the proxy routes to a `passthrough` upstream, which the proxy does not scan, capture scans itself, as it scans the same request sent to that upstream's `target` ([AI-layer capture](#ai-layer-capture)): the upstream's host, not the proxy's, decides whether it is a request to a model API host. Capture leaves the reply to that request to the proxy, which scans it. Capture finds the upstream as the proxy does, by the longest `pathPrefix` the path starts with. The proxy scans on the agent's thread, as capture does.
 
 This example stands in for a model API with a server on `127.0.0.1` and sends the agent's request to it through the proxy:
 

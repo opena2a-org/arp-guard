@@ -40,7 +40,8 @@ export class LoopbackProxy {
 
   constructor(
     engine: EventEngine,
-    private readonly config: ProxyConfig,
+    /** The `proxy` config the proxy runs with. */
+    readonly config: ProxyConfig,
     aiLayer: ProxyAILayerConfig | undefined,
   ) {
     // What an output pattern matches in a reply is masked in the event, as it
