@@ -517,7 +517,9 @@ class BodyCollector {
  * and `prompt` or a string `input`. System and developer turns are the
  * application's own and are not taken, nor are the turns before the last
  * assistant turn, so a turn is not scanned again each time the conversation is
- * sent.
+ * sent. Assistant turns at the end of a request are a prefill, text the model
+ * continues its reply from: the last assistant turn is then the last one
+ * before them, so the user turn a prefill follows is taken.
  */
 export function promptInputs(body: unknown): string[] {
   if (!isRecord(body)) return [];
@@ -532,14 +534,15 @@ export function promptInputs(body: unknown): string[] {
 }
 
 function newTurnTexts(turns: unknown[]): string[] {
+  let end = turns.length;
+  while (end > 0 && isAssistantTurn(turns[end - 1])) end -= 1;
   let start = 0;
-  turns.forEach((turn, i) => {
-    if (isRecord(turn) && ((typeof turn.role === 'string' && ASSISTANT_ROLES.has(turn.role)) || turn.type === 'function_call')) {
-      start = i + 1;
-    }
-  });
+  for (let i = 0; i < end; i++) {
+    const turn = turns[i];
+    if (isAssistantTurn(turn) || (isRecord(turn) && turn.type === 'function_call')) start = i + 1;
+  }
   const texts: string[] = [];
-  for (const turn of turns.slice(start)) {
+  for (const turn of turns.slice(start, end)) {
     if (typeof turn === 'string') {
       texts.push(turn);
     } else if (isRecord(turn) && ((typeof turn.role === 'string' && INPUT_ROLES.has(turn.role)) || turn.type === 'function_call_output')) {
@@ -549,6 +552,10 @@ function newTurnTexts(turns: unknown[]): string[] {
     }
   }
   return texts;
+}
+
+function isAssistantTurn(turn: unknown): boolean {
+  return isRecord(turn) && typeof turn.role === 'string' && ASSISTANT_ROLES.has(turn.role);
 }
 
 /**
