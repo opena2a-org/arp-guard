@@ -66,7 +66,18 @@ export interface CaptureConfig {
   };
 }
 
+/** An entry of `proxy.upstreams`, as capture reads it. */
+export interface ProxyUpstreamRoute {
+  pathPrefix: string;
+  target: string;
+  protocol: string;
+}
+
 const A2A_METHODS = new Set(['message/send', 'message/stream', 'tasks/send', 'tasks/sendSubscribe']);
+
+// The upstream protocols whose requests ARP's proxy scans. It passes a request
+// to an upstream of any other protocol, such as `passthrough`, on unscanned.
+const PROXY_SCANNED_PROTOCOLS = new Set(['openai-api', 'mcp-http', 'a2a']);
 
 // Set while ARP does its own work, and in the callbacks that work schedules:
 // a request made then is ARP's, not the agent's, and is not captured.
@@ -120,7 +131,10 @@ const INPUT_ROLES = new Set(['user', 'tool', 'function']);
 
 type AnyFunction = (this: unknown, ...args: unknown[]) => unknown;
 type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunction; wrapper: AnyFunction };
-type Target = { hostname: string; port: string; origin: string };
+type Target = { hostname: string; port: string; origin: string; path: string };
+// The target capture scans a request as sent to, and whether ARP's proxy
+// passes the request on to it and scans the reply.
+type Route = { target: Target; proxied: boolean };
 type HostRule = { host: string; port: string | null; suffix: boolean };
 type ByteReader = {
   read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -141,9 +155,10 @@ export class AILayerCapture {
   private readonly hosts: HostRule[];
   private patches: Patch[] = [];
   private active = false;
-  // The port of ARP's proxy on the loopback address, which scans the requests
-  // the agent sends to it itself.
+  // The port of ARP's proxy on the loopback address, and the config whose
+  // `upstreams` route the requests the agent sends to it.
   private proxyPort: string | null = null;
+  private proxyConfig: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null;
 
   constructor(engine: EventEngine, config: CaptureConfig) {
     const al = config.aiLayer;
@@ -166,9 +181,16 @@ export class AILayerCapture {
     return Boolean(this.prompt || this.mcp || this.a2a);
   }
 
-  /** Leaves a request to ARP's proxy, on 127.0.0.1 or localhost at `port`, to the proxy. */
-  leaveToProxy(port: number | null): void {
+  /**
+   * Leaves a request to ARP's proxy, on 127.0.0.1 or localhost at `port`, to
+   * the proxy, which scans it, unless `proxy.upstreams` routes it to an
+   * upstream whose requests the proxy does not scan, such as a `passthrough`
+   * one. Capture scans that request as sent to the upstream's `target`, and
+   * leaves its reply to the proxy.
+   */
+  leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
     this.proxyPort = port === null ? null : String(port);
+    this.proxyConfig = port === null ? null : proxy;
   }
 
   // True when a hooked call is the agent's traffic to capture.
@@ -176,8 +198,16 @@ export class AILayerCapture {
     return this.active && !isArpOwnWork();
   }
 
-  private isProxy(target: Target): boolean {
-    return target.port === this.proxyPort && (target.hostname === '127.0.0.1' || target.hostname === 'localhost');
+  // How capture scans a request to `target`: null when it leaves the request
+  // to ARP's proxy. The proxy answers a request it routes to no upstream with
+  // 404 and passes it on to none.
+  private route(target: Target): Route | null {
+    if (target.port !== this.proxyPort || (target.hostname !== '127.0.0.1' && target.hostname !== 'localhost')) {
+      return { target, proxied: false };
+    }
+    const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
+    if (!upstream || PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
+    return { target: fetchTarget(upstream.target) ?? target, proxied: true };
   }
 
   async start(): Promise<void> {
@@ -252,19 +282,20 @@ export class AILayerCapture {
   // request back. Capture reads what it scans from the arguments before that
   // call, and the body of a Request from a copy, which it scans once whole.
   private captureFetch(original: AnyFunction, thisArg: unknown, args: unknown[]): unknown {
-    let request: { target: Target; model: boolean; body: string | Promise<string | null> | null } | null = null;
+    let request: { target: Target; model: boolean; proxied: boolean; body: string | Promise<string | null> | null } | null = null;
     try {
-      const target = fetchTarget(args[0]);
-      if (target && !this.isProxy(target)) {
-        const model = this.isModelHost(target);
-        request = { target, model, body: fetchBody(args[0], args[1], model) };
+      const requested = fetchTarget(args[0]);
+      const route = requested && this.route(requested);
+      if (route) {
+        const model = this.isModelHost(route.target);
+        request = { target: route.target, model, proxied: route.proxied, body: fetchBody(args[0], args[1], model) };
       }
     } catch {
       // Capture never stands between the agent and its request.
     }
     if (request === null) return original.apply(thisArg, args);
     const result = capturedFetch.run(true, () => original.apply(thisArg, args));
-    const { target, model, body } = request;
+    const { target, model, proxied, body } = request;
     if (typeof body === 'string') {
       safely(() => this.scanRequest(target, model, body));
     } else if (body !== null) {
@@ -272,7 +303,8 @@ export class AILayerCapture {
         if (text !== null) safely(() => this.scanRequest(target, model, text));
       });
     }
-    if (!model || !isPromiseLike(result)) return result;
+    // ARP's proxy scans the reply to a request it passes on.
+    if (!model || proxied || !isPromiseLike(result)) return result;
     return result.then((response) => {
       safely(() => this.watchFetchResponse(response as FetchResponse));
       return response;
@@ -289,8 +321,10 @@ export class AILayerCapture {
   }
 
   private watchClientRequest(req: http.ClientRequest, args: unknown[], protocol: string): void {
-    const target = requestTarget(args, protocol);
-    if (!target || this.isProxy(target)) return;
+    const requested = requestTarget(args, protocol);
+    const route = requested && this.route(requested);
+    if (!route) return;
+    const { target, proxied } = route;
     const model = this.isModelHost(target);
     if (!model && !this.mcp && !this.a2a) return;
     const self = this;
@@ -323,8 +357,8 @@ export class AILayerCapture {
     // socket; it knows there is none when `emit('response')` returns false. So
     // the response is watched from inside `emit`, which returns what it would
     // with no hook, and is not scanned when it is discarded, as the agent never
-    // reads it.
-    if (model) {
+    // reads it. ARP's proxy scans the reply to a request it passes on.
+    if (model && !proxied) {
       const emit = req.emit as unknown as AnyFunction;
       req.emit = function (this: unknown, ...emitArgs: unknown[]) {
         if (emitArgs[0] !== 'response' || !self.active) return emit.apply(this, emitArgs);
@@ -661,10 +695,11 @@ function defaultPort(protocol: string): string {
   return protocol === 'https:' ? '443' : '80';
 }
 
-function makeTarget(protocol: string, hostname: string, port: string): Target {
+// `path` is the path and query the request line carries.
+function makeTarget(protocol: string, hostname: string, port: string, path: string): Target {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   const shown = host.includes(':') ? `[${host}]` : host;
-  return { hostname: host, port, origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}` };
+  return { hostname: host, port, origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}`, path };
 }
 
 function fetchTarget(input: unknown): Target | null {
@@ -675,10 +710,20 @@ function fetchTarget(input: unknown): Target | null {
   else return null;
   try {
     const url = new URL(href);
-    return makeTarget(url.protocol, url.hostname, url.port || defaultPort(url.protocol));
+    return makeTarget(url.protocol, url.hostname, url.port || defaultPort(url.protocol), url.pathname + url.search);
   } catch {
     return null;
   }
+}
+
+// The entry of `proxy.upstreams` ARP's proxy passes a request with this path
+// to, found as the proxy finds it: of the entries whose `pathPrefix` the path
+// starts with, one with the longest.
+function proxyUpstream(upstreams: unknown, path: string): ProxyUpstreamRoute | undefined {
+  if (!Array.isArray(upstreams)) return undefined;
+  return ([...upstreams] as ProxyUpstreamRoute[])
+    .sort((a, b) => b.pathPrefix.length - a.pathPrefix.length)
+    .find((upstream) => path.startsWith(upstream.pathPrefix));
 }
 
 // The target of `http.request` / `https.request` / `get` arguments, read the
@@ -705,7 +750,8 @@ function requestTarget(args: unknown[], fallbackProtocol: string): Target | null
     options.port !== undefined && options.port !== null && options.port !== ''
       ? String(options.port)
       : url?.port || defaultPort(protocol);
-  return makeTarget(protocol, hostname, port);
+  const path = typeof options.path === 'string' ? options.path || '/' : url ? url.pathname + url.search : '/';
+  return makeTarget(protocol, hostname, port, path);
 }
 
 // The body of a fetch request, read during the agent's call: from the options
