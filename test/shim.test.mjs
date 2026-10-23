@@ -38,6 +38,18 @@ test('the shim carries the license and the repository of the root package', () =
   assert.deepEqual(shim.repository, rootPackage.repository)
 })
 
+// At the v0.3.0 tag, package.json names the hackmyagent repository in
+// `repository`, `homepage` and `bugs`. The shim carries the root package's
+// three, and its `homepage` and `bugs` name the repository that
+// `repository.url` names.
+test('the shim carries the homepage and the bugs URL of the root package, and both name its repository', () => {
+  assert.equal(shim.homepage, rootPackage.homepage)
+  assert.deepEqual(shim.bugs, rootPackage.bugs)
+  const repository = rootPackage.repository.url.replace(/^git\+/, '').replace(/\.git$/, '')
+  assert.equal(shim.homepage, `${repository}#readme`)
+  assert.deepEqual(shim.bugs, { url: `${repository}/issues` })
+})
+
 // The shim is loaded the way an install loads it: by name, from a
 // `node_modules` directory that holds a copy of the files it publishes. Next
 // to the copy, under the root package's name, is a stand-in whose entry point

@@ -16,5 +16,9 @@
     "type": "git",
     "url": "https://github.com/opena2a-org/agent-runtime-protection.git"
   },
+  "homepage": "https://github.com/opena2a-org/agent-runtime-protection#readme",
+  "bugs": {
+    "url": "https://github.com/opena2a-org/agent-runtime-protection/issues"
+  },
   "license": "Apache-2.0"
 }
