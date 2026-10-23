@@ -757,6 +757,82 @@ test('a fetch body over 1 MiB that capture stops reading is reported as at least
   }
 })
 
+// clone() tees the body of a fetch reply into the branch the agent reads and
+// the copy capture reads, and the cancel of one branch of a tee completes only
+// once the other is cancelled too, or the body ends or fails. Capture read its
+// copy on, to the end of the reply, or past 1 MiB to the chunk after the one
+// that crossed it, so while the server held the rest of a reply, the agent's
+// cancel of the body did not complete and the connection stayed open until the
+// server went on, below 1 MiB and past it, and the event for the reply past
+// 1 MiB waited as well. Here the server holds the rest until the connection
+// closes.
+for (const [bytes, size, reported, said] of [
+  [
+    16 * 1024,
+    'below 1 MiB',
+    // Not scanned, though the 16 KiB the agent read are a whole reply with a leak.
+    () => [],
+    "or a `fetch` reply whose body the agent cancels before all of it has arrived: capture then cancels its copy of the body as well, so that the agent's cancel completes, and the connection closes, as with no hook.",
+  ],
+  [
+    MAX_CAPTURE_BYTES + 1,
+    'past 1 MiB',
+    // Capture counted the reply to its last byte so far and waited for the next chunk.
+    (host) => [`response A response body of at least ${MAX_CAPTURE_BYTES + 1} bytes from http://${host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`],
+    'A `fetch` reply whose body the agent cancels while capture waits for the chunk after that one is described as at least the count up to that chunk.',
+  ],
+]) {
+  test(`with prompt capture on, the agent's cancel of the body of a fetch reply ${size} completes and closes the connection while the server holds the rest, as with no hook`, async () => {
+    // For each request, a promise settled when the server sees its socket close.
+    const closed = []
+    // A whole reply of `bytes` bytes, with no Content-Length, and then nothing:
+    // the server does not end the body.
+    const server = http.createServer((req, res) => {
+      closed.push(new Promise((resolve) => req.socket.once('close', resolve)))
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json', connection: 'close' })
+        res.write(ofSize({ choices: [{ message: { role: 'assistant', content: LEAK } }] }, bytes))
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const host = `127.0.0.1:${server.address().port}`
+    const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [host] } })
+    // The agent reads the bytes the server sent, then cancels the body.
+    const readThenCancel = async (how) => {
+      const response = await fetch(`http://${host}/v1/chat/completions`, { method: 'POST', body: chat('Hello') })
+      const socketClosed = closed.at(-1)
+      const reader = response.body.getReader()
+      let got = 0
+      while (got < bytes) {
+        const { done, value } = await reader.read()
+        if (done) break
+        got += value.byteLength
+      }
+      assert.equal(got, bytes, `${how}, the agent did not read the ${bytes} bytes the server sent`)
+      const cancel = await Promise.race([reader.cancel().then(() => 'completed'), sleep(2000).then(() => 'still waiting')])
+      assert.equal(cancel, 'completed', `${how}, the agent's cancel of the reply did not complete`)
+      const socket = await Promise.race([socketClosed.then(() => 'closed'), sleep(2000).then(() => 'open')])
+      assert.equal(socket, 'closed', `${how}, the connection of the cancelled reply did not close`)
+    }
+    try {
+      await readThenCancel('with no hook')
+      await arp.start()
+      await readThenCancel('with prompt capture on')
+      await until(events, (all) => summary(all, 'prompt').length >= reported(host).length)
+      await sleep(300)
+      assert.deepEqual(summary(events, 'prompt'), reported(host))
+      const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
+      assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
+    } finally {
+      await arp.stop()
+      server.closeAllConnections?.()
+      await new Promise((resolve) => server.close(resolve))
+      cleanup()
+    }
+  })
+}
+
 test('a tools/call over 1 MiB sent to another host or written to a child is reported once from mcp-protocol, one of 1 MiB is scanned, and a body that is not JSON is not reported', async () => {
   const server = await serve()
   const { arp, events, cleanup } = protect({ mcp: { enabled: true, capture: true } })
