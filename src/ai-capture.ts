@@ -972,10 +972,11 @@ function isRequestWithBody(input: unknown): input is { headers: HeadersLike; bod
 // MAX_CAPTURE_BYTES, and never rejects. A web stream, as fetch gives, is
 // cancelled past that, which leaves the original to the agent, and also when
 // the agent is done with `kept`, the branch it reads, before the body has
-// arrived whole. A Node stream, as node-fetch gives, is read to its end:
-// node-fetch pipes the body into the original and the copy alike, and the
-// original moves on only as fast as the copy is read. Null when the copy
-// cannot be read to its end.
+// arrived whole, which gives the bytes the copy holds then. A Node stream, as
+// node-fetch gives, is read to its end: node-fetch pipes the body into the
+// original and the copy alike, and the original moves on only as fast as the
+// copy is read. Null when a read of the copy fails, or a Node stream closes
+// before its end.
 function readCopy(stream: unknown, kept?: unknown): Promise<Read | null> {
   if (isRecord(stream) && typeof stream.getReader === 'function') return readCapped(stream as unknown as ByteStream, kept);
   if (isRecord(stream) && typeof stream.on === 'function' && typeof stream.once === 'function') {
@@ -1006,8 +1007,10 @@ function drainCapped(stream: NodeStream): Promise<Read | null> {
 // agent's cancel of `kept` would wait for the server to send the rest of the
 // body, and the connection would stay open until then. So once `kept` is
 // closed or has failed, a read of the copy that still waits for the body to go
-// on is cancelled, and the copy is not scanned. When `kept` closes at the end
-// of the body, the copy already holds the rest of it, and no read of it waits.
+// on is cancelled. That read then gives done, and the bytes the copy holds,
+// which include every byte the agent read of `kept`, are scanned: the rest of
+// the body does not arrive, as with no hook. When `kept` closes at the end of
+// the body, the copy already holds the rest of it, and no read of it waits.
 async function readCapped(stream: ByteStream, kept?: unknown): Promise<Read | null> {
   let reader: ByteReader;
   try {
@@ -1037,7 +1040,6 @@ async function readCapped(stream: ByteStream, kept?: unknown): Promise<Read | nu
   try {
     for (;;) {
       const { done, value } = await read();
-      if (stopped) return null;
       if (done) break;
       if (!value) continue;
       size += value.byteLength;

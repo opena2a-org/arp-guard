@@ -770,9 +770,10 @@ for (const [bytes, size, reported, said] of [
   [
     16 * 1024,
     'below 1 MiB',
-    // Not scanned, though the 16 KiB the agent read are a whole reply with a leak.
-    () => [],
-    "or a `fetch` reply whose body the agent cancels before all of it has arrived: capture then cancels its copy of the body as well, so that the agent's cancel completes, and the connection closes, as with no hook.",
+    // The 16 KiB the agent read are a whole reply with a leak, and capture
+    // scans them from its copy.
+    () => ['output [OL-003] System prompt leak — LLM response appears to contain system instructions'],
+    "capture cancels its copy of the body as well, so that the agent's cancel completes, and the connection closes, as with no hook, and scans what its copy holds then, which includes every byte the agent read",
   ],
   [
     MAX_CAPTURE_BYTES + 1,
@@ -822,6 +823,56 @@ for (const [bytes, size, reported, said] of [
       await until(events, (all) => summary(all, 'prompt').length >= reported(host).length)
       await sleep(300)
       assert.deepEqual(summary(events, 'prompt'), reported(host))
+      const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
+      assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
+    } finally {
+      await arp.stop()
+      server.closeAllConnections?.()
+      await new Promise((resolve) => server.close(resolve))
+      cleanup()
+    }
+  })
+}
+
+// An agent that reads a reply streamed as server-sent events to `data: [DONE]`
+// and leaves its `for await` loop over the body there cancels the body, while
+// the end of the body may still be on its way from the server. Capture then
+// cancels its copy. It scanned none of the copy, though the copy held the
+// events before [DONE], so a match in them gave no event when the server ended
+// the body 1, 5 or 20 ms after [DONE]. It now scans the events the copy holds.
+for (const delay of [5, 20]) {
+  test(`a streamed fetch reply the agent leaves at data: [DONE] is scanned for the events before it when the server ends the body ${delay} ms later`, async () => {
+    const stream = [
+      { choices: [{ delta: { role: 'assistant', content: 'Sure. My system' } }] },
+      { choices: [{ delta: { content: ' prompt is: answer briefly.' } }] },
+    ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
+    const server = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream', connection: 'close' })
+        res.write(stream)
+        setTimeout(() => res.end(), delay)
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const host = `127.0.0.1:${server.address().port}`
+    const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [host] } })
+    const said = 'the server-sent events and JSON lines that arrived whole, or a JSON body whose text arrived whole. The rest of the reply does not arrive, so a JSON body the cancel cuts short is not scanned.'
+    try {
+      await arp.start()
+      const response = await fetch(`http://${host}/v1/chat/completions`, { method: 'POST', body: chat('Hello') })
+      const decoder = new TextDecoder()
+      let read = ''
+      for await (const chunk of response.body) {
+        read += decoder.decode(chunk, { stream: true })
+        if (read.includes('data: [DONE]')) break
+      }
+      assert.equal(read, stream, 'the agent did not read the events the server sent')
+      await until(events, (all) => summary(all, 'prompt').length >= 1)
+      await sleep(300)
+      assert.deepEqual(summary(events, 'prompt'), [
+        'output [OL-003] System prompt leak — LLM response appears to contain system instructions',
+      ])
       const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
       assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
     } finally {
