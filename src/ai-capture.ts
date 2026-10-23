@@ -148,12 +148,13 @@ const INPUT_ROLES = new Set(['user', 'tool', 'function']);
 type AnyFunction = (this: unknown, ...args: unknown[]) => unknown;
 type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunction; wrapper: AnyFunction };
 // `atProxyHost`: a request to the host reaches a listener on 127.0.0.1, the
-// address ARP's proxy listens on. `localhost`: the host is the name localhost,
-// which the system's resolver reads, so a request to it can reach that
-// listener or another one at the same port.
-type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean; localhost: boolean };
-// The target capture scans a request as sent to, whether it is a model API
-// host, and whether ARP's proxy passes the request on to it and scans the reply.
+// address ARP's proxy listens on. `named`: the host is a name, such as
+// localhost or 127.1, which Node passes to the system's resolver, so a request
+// to it can reach that listener or another one at the same port.
+type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean; named: boolean };
+// The target capture scans a request as sent to, whether it scans the request
+// as one to a model API host, and whether it leaves the reply to ARP's proxy,
+// which scans the reply to a request it passes on.
 type Route = { target: Target; model: boolean; proxied: boolean };
 type HostRule = { host: string; port: string | null; suffix: boolean };
 type ByteReader = {
@@ -221,6 +222,13 @@ export class AILayerCapture {
    * routed to such an upstream as sent to the upstream's `target`, and leaves
    * its reply to the proxy; it scans one routed to none as sent to the proxy's
    * host.
+   *
+   * A request to `port` at a name, which `reachesProxyHost` does not accept,
+   * reaches the proxy when the system's resolver gives 127.0.0.1 for the name
+   * first, which capture cannot tell, so capture leaves neither the request
+   * nor its reply to the proxy. It scans the request as sent to that name, and
+   * as a request to a model API host as well when `proxy.upstreams` routes its
+   * path to an upstream whose `target` is one.
    */
   leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
     this.proxyPort = port === null ? null : String(port);
@@ -250,13 +258,14 @@ export class AILayerCapture {
       proxied = true;
     }
     let model = this.isModelHost(target);
-    // The system's resolver reads the name localhost, and need not answer
-    // 127.0.0.1 for it first, so a request to the proxy's port at localhost can
-    // reach another listener at that port, such as one on ::1. Capture leaves
-    // neither the request nor its reply to the proxy, and scans the request as
-    // one to a model API host as well when the proxy would pass it on to an
-    // upstream whose `target` is one.
-    if (!model && target.localhost && target.port === this.proxyPort) {
+    // The system's resolver reads a name, such as localhost or 127.1, and need
+    // not answer 127.0.0.1 for it first, so capture cannot tell whether a
+    // request to the proxy's port at a name reaches the proxy or another
+    // listener at that port, such as one on ::1. Capture leaves neither the
+    // request nor its reply to the proxy, and scans the request as one to a
+    // model API host as well when the proxy would pass it on to an upstream
+    // whose `target` is one, whatever the upstream's protocol.
+    if (!model && target.named && target.port === this.proxyPort) {
       const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
       const passedOnTo = upstream ? fetchTarget(upstream.target) : null;
       model = passedOnTo !== null && this.isModelHost(passedOnTo);
@@ -851,7 +860,7 @@ function makeTarget(protocol: string, host: string, port: string, path: string):
     origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}`,
     path,
     atProxyHost: reachesProxyHost(host.toLowerCase()),
-    localhost: host.toLowerCase() === 'localhost',
+    named: net.isIP(host) === 0,
   };
 }
 
