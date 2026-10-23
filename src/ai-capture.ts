@@ -32,6 +32,7 @@ import net = require('net');
 import childProcess = require('child_process');
 import zlib = require('zlib');
 import { AsyncLocalStorage } from 'async_hooks';
+import { finished } from 'stream';
 import {
   A2AProtocolInterceptor,
   MCPProtocolInterceptor,
@@ -368,7 +369,9 @@ export class AILayerCapture {
     // A reply over the limit is not scanned, so it is not copied either.
     const length = Number(response.headers.get('content-length'));
     if (length > MAX_CAPTURE_BYTES) return this.reportOverLimit(target, true, 'response', length);
-    void readCopy(response.clone().body).then((read) => {
+    const copy = response.clone().body;
+    // After clone(), `body` is the agent's branch of the body.
+    void readCopy(copy, response.body).then((read) => {
       if (read === null) return;
       if ('over' in read) safely(() => this.reportOverLimit(target, true, 'response', read.over, undefined, read.atLeast));
       else safely(() => this.scanResponse(read.bytes.toString('utf8')));
@@ -967,12 +970,14 @@ function isRequestWithBody(input: unknown): input is { headers: HeadersLike; bod
 
 // Reads the copy of a body that clone() gives, keeping at most
 // MAX_CAPTURE_BYTES, and never rejects. A web stream, as fetch gives, is
-// cancelled past that, which leaves the original to the agent. A Node stream,
-// as node-fetch gives, is read to its end: node-fetch pipes the body into the
-// original and the copy alike, and the original moves on only as fast as the
-// copy is read. Null when the copy cannot be read to its end.
-function readCopy(stream: unknown): Promise<Read | null> {
-  if (isRecord(stream) && typeof stream.getReader === 'function') return readCapped(stream as unknown as ByteStream);
+// cancelled past that, which leaves the original to the agent, and also when
+// the agent is done with `kept`, the branch it reads, before the body has
+// arrived whole. A Node stream, as node-fetch gives, is read to its end:
+// node-fetch pipes the body into the original and the copy alike, and the
+// original moves on only as fast as the copy is read. Null when the copy
+// cannot be read to its end.
+function readCopy(stream: unknown, kept?: unknown): Promise<Read | null> {
+  if (isRecord(stream) && typeof stream.getReader === 'function') return readCapped(stream as unknown as ByteStream, kept);
   if (isRecord(stream) && typeof stream.on === 'function' && typeof stream.once === 'function') {
     return drainCapped(stream as unknown as NodeStream);
   }
@@ -996,26 +1001,52 @@ function drainCapped(stream: NodeStream): Promise<Read | null> {
   });
 }
 
-async function readCapped(stream: ByteStream): Promise<Read | null> {
+// clone() tees a web stream, and the cancel of one branch of a tee completes
+// only once the other branch is cancelled too, or the body ends or fails: the
+// agent's cancel of `kept` would wait for the server to send the rest of the
+// body, and the connection would stay open until then. So once `kept` is
+// closed or has failed, a read of the copy that still waits for the body to go
+// on is cancelled, and the copy is not scanned. When `kept` closes at the end
+// of the body, the copy already holds the rest of it, and no read of it waits.
+async function readCapped(stream: ByteStream, kept?: unknown): Promise<Read | null> {
   let reader: ByteReader;
   try {
     reader = stream.getReader();
   } catch {
     return null;
   }
+  // `reading` is set while a read of the copy is in flight, and `stopped` once
+  // capture cancels the copy because the agent is done with `kept`.
+  let reading = false;
+  let stopped = false;
+  whenFinished(kept, () => {
+    if (!reading) return;
+    stopped = true;
+    reader.cancel().catch(() => {});
+  });
+  const read = async (): Promise<{ done: boolean; value?: Uint8Array }> => {
+    reading = true;
+    try {
+      return await reader.read();
+    } finally {
+      reading = false;
+    }
+  };
   const chunks: Buffer[] = [];
   let size = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await read();
+      if (stopped) return null;
       if (done) break;
       if (!value) continue;
       size += value.byteLength;
       if (size > MAX_CAPTURE_BYTES) {
         // One read more tells whether the body ends with this chunk. When it
-        // does not, the rest is not read, so `size` is a lower bound.
-        const next = await reader.read().catch(() => null);
-        if (next?.done) return { over: size };
+        // does not, or the copy is cancelled first, the rest is not read, so
+        // `size` is a lower bound.
+        const next = await read().catch(() => null);
+        if (next?.done && !stopped) return { over: size };
         await reader.cancel().catch(() => {});
         return { over: size, atLeast: true };
       }
@@ -1031,6 +1062,19 @@ async function readCapped(stream: ByteStream): Promise<Read | null> {
     }
   }
   return { bytes: Buffer.concat(chunks) };
+}
+
+// Runs `run` once `body`, a web stream, is closed, at its end or by a cancel,
+// or has failed. It runs a turn of the event loop later: a read of the copy
+// that the bytes already received can complete completes in the promise jobs
+// before that turn.
+function whenFinished(body: unknown, run: () => void): void {
+  if (body === undefined || body === null) return;
+  safely(() => {
+    finished(body as NodeJS.ReadableStream, () => {
+      setImmediate(() => safely(run));
+    });
+  });
 }
 
 // What decodeBody gives for a body that decodes to more than MAX_CAPTURE_BYTES.
