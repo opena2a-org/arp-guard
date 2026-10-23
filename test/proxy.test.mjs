@@ -703,7 +703,7 @@ test("with capture on as well, a request to the proxy on a path no upstream rout
   const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('With `capture: true` set as well, '))
   assert.ok(paragraph, 'the Proxy section has no paragraph on capture')
   const said =
-    "A request on a path that starts with no `pathPrefix`, which the proxy answers with 404, passes to no upstream and does not scan, capture scans as a request to the proxy's host: with the default `aiLayer.prompt.hosts`, the MCP and A2A interceptors scan it and the prompt interceptor does not, so a `tools/call` whose `path` argument is `../../etc/hosts`, sent to `127.0.0.1` at the proxy's port on such a path, gives one `MCP-001` event."
+    "The proxy answers a request on a path that starts with no `pathPrefix` with 404, passes it to no upstream and does not scan it, so capture scans that request itself, as a request to the proxy's host: with the default `aiLayer.prompt.hosts`, which does not name the proxy's host, the MCP and A2A interceptors scan it and the prompt interceptor does not, and a `tools/call` whose `path` argument is `../../etc/hosts`, sent to `127.0.0.1` at the proxy's port on such a path, gives one `MCP-001` event."
   assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
 })
 
