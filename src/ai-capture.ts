@@ -214,8 +214,10 @@ export class AILayerCapture {
    * Leaves a request to ARP's proxy, on 127.0.0.1 at `port`, to the proxy: one
    * to `port` at a host `reachesProxyHost` accepts. The proxy scans it, unless
    * `proxy.upstreams` routes it to an upstream whose requests the proxy does
-   * not scan, such as a `passthrough` one. Capture scans that request as sent
-   * to the upstream's `target`, and leaves its reply to the proxy.
+   * not scan, such as a `passthrough` one, or to none. Capture scans a request
+   * routed to such an upstream as sent to the upstream's `target`, and leaves
+   * its reply to the proxy; it scans one routed to none as sent to the proxy's
+   * host.
    */
   leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
     this.proxyPort = port === null ? null : String(port);
@@ -229,16 +231,18 @@ export class AILayerCapture {
 
   // How capture scans a request to `requested`: null when it does not, as when
   // it leaves the request to ARP's proxy. The proxy answers a request it routes
-  // to no upstream with 404 and passes it on to none. To a host other than a
-  // model API's, capture scans a request for the MCP and A2A interceptors
-  // alone, so with neither on, it does not read the body, nor report one larger
-  // than MAX_CAPTURE_BYTES.
+  // to no upstream with 404, passes it on to none and does not scan it, so
+  // capture scans that request as sent to the proxy's host. To a host other
+  // than a model API's, capture scans a request for the MCP and A2A
+  // interceptors alone, so with neither on, it does not read the body, nor
+  // report one larger than MAX_CAPTURE_BYTES.
   private route(requested: Target): Route | null {
     let target = requested;
     let proxied = false;
-    if (target.port === this.proxyPort && target.atProxyHost) {
-      const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
-      if (!upstream || PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
+    const upstream =
+      target.port === this.proxyPort && target.atProxyHost ? proxyUpstream(this.proxyConfig?.upstreams, target.path) : undefined;
+    if (upstream) {
+      if (PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
       target = fetchTarget(upstream.target) ?? target;
       proxied = true;
     }
