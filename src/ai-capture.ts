@@ -147,8 +147,10 @@ const INPUT_ROLES = new Set(['user', 'tool', 'function']);
 type AnyFunction = (this: unknown, ...args: unknown[]) => unknown;
 type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunction; wrapper: AnyFunction };
 // `atProxyHost`: a request to the host reaches a listener on 127.0.0.1, the
-// address ARP's proxy listens on.
-type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean };
+// address ARP's proxy listens on. `localhost`: the host is the name localhost,
+// which the system's resolver reads, so a request to it can reach that
+// listener or another one at the same port.
+type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean; localhost: boolean };
 // The target capture scans a request as sent to, whether it is a model API
 // host, and whether ARP's proxy passes the request on to it and scans the reply.
 type Route = { target: Target; model: boolean; proxied: boolean };
@@ -246,7 +248,18 @@ export class AILayerCapture {
       target = fetchTarget(upstream.target) ?? target;
       proxied = true;
     }
-    const model = this.isModelHost(target);
+    let model = this.isModelHost(target);
+    // The system's resolver reads the name localhost, and need not answer
+    // 127.0.0.1 for it first, so a request to the proxy's port at localhost can
+    // reach another listener at that port, such as one on ::1. Capture leaves
+    // neither the request nor its reply to the proxy, and scans the request as
+    // one to a model API host as well when the proxy would pass it on to an
+    // upstream whose `target` is one.
+    if (!model && target.localhost && target.port === this.proxyPort) {
+      const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
+      const passedOnTo = upstream ? fetchTarget(upstream.target) : null;
+      model = passedOnTo !== null && this.isModelHost(passedOnTo);
+    }
     if (!model && !this.mcp && !this.a2a) return null;
     return { target, model, proxied };
   }
@@ -835,6 +848,7 @@ function makeTarget(protocol: string, host: string, port: string, path: string):
     origin: `${protocol}//${shown}${port === defaultPort(protocol) ? '' : `:${port}`}`,
     path,
     atProxyHost: reachesProxyHost(host.toLowerCase()),
+    localhost: host.toLowerCase() === 'localhost',
   };
 }
 
@@ -847,14 +861,15 @@ function urlHost(url: URL): string {
 // reaches it on macOS and Linux, each also as an IPv4-mapped IPv6 address.
 const PROXY_HOST_ADDRESSES = new Set(['127.0.0.1', '0.0.0.0', '[::ffff:7f00:1]', '[::ffff:0:0]']);
 
-// True for the name localhost, and for an address `net.isIP` accepts, which
-// Node connects to as written, in PROXY_HOST_ADDRESSES. Node passes a host
-// `net.isIP` refuses to the system's resolver, which need not read it as the
-// URL parser does: as the `hostname` option of `http.request` on macOS,
-// 0177.0.0.1 does not reach a listener on 127.0.0.1, though the URL parser
-// reads it as 127.0.0.1.
+// True for an address `net.isIP` accepts, which Node connects to as written,
+// in PROXY_HOST_ADDRESSES. Node passes a host `net.isIP` refuses to the
+// system's resolver, which need not read it as the URL parser does: as the
+// `hostname` option of `http.request` on macOS, 0177.0.0.1 does not reach a
+// listener on 127.0.0.1, though the URL parser reads it as 127.0.0.1. Nor
+// need the resolver answer 127.0.0.1 first for the name localhost: where it
+// answers ::1 first, a request to localhost reaches a listener on ::1 at the
+// port, when there is one, and not one on 127.0.0.1.
 function reachesProxyHost(host: string): boolean {
-  if (host === 'localhost') return true;
   const family = net.isIP(host);
   if (family === 0) return false;
   const address = attempt(() => new URL(`http://${family === 6 ? `[${host}]` : host}/`).hostname);
