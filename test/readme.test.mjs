@@ -128,10 +128,13 @@ function documentedCommands(command) {
   return commands
 }
 
-test('a runnable command and its output end before line 30', () => {
+test('a runnable command and its output end within 30 lines of the ecosystem line', () => {
+  // Counted from the ecosystem line (`> **[OpenA2A`), or from line 1 where there is none, so the
+  // header block above it never pays for the start block.
+  const ecosystemLine = readme.findIndex((line) => line.startsWith('> **[OpenA2A')) + 1
   const { command, output } = quickStart(readme)
-  assert.ok(command.start < 30, `the install command block starts at line ${command.start}`)
-  assert.ok(output.end < 30, `its output block ends at line ${output.end}`)
+  assert.ok(command.start - ecosystemLine < 30, `the install command block starts at line ${command.start}, ecosystem line ${ecosystemLine}`)
+  assert.ok(output.end - ecosystemLine < 30, `its output block ends at line ${output.end}, ecosystem line ${ecosystemLine}`)
 })
 
 test('Quick Start is the first section and the caveat section follows it', () => {
