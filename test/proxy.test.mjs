@@ -553,13 +553,17 @@ test("capture scans a request to the proxy's port at localhost itself, whether o
   const section = lines.slice(lines.indexOf('## Proxy') + 1)
   const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('With `capture: true` set as well, '))
   assert.ok(paragraph, 'the Proxy section has no paragraph on capture')
+  const localhostParagraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('Capture does not leave a request to the name `localhost` to the proxy, '))
+  assert.ok(localhostParagraph, 'the Proxy section has no paragraph on a request to localhost')
+  const said =
+    "capture leaves a request the agent sends to the proxy, at the proxy's port and `127.0.0.1` or `0.0.0.0`, or either written as an IPv4-mapped IPv6 address such as `[::ffff:127.0.0.1]`, to the proxy,"
+  assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
   for (const said of [
-    "capture leaves a request the agent sends to the proxy, at the proxy's port and `127.0.0.1` or `0.0.0.0`, or either written as an IPv4-mapped IPv6 address such as `[::ffff:127.0.0.1]`, to the proxy,",
     "Capture does not leave a request to the name `localhost` to the proxy, as the system's resolver need not answer `127.0.0.1` for the name first: where it answers `::1` first, a request to `localhost` at the proxy's port reaches a listener on `::1` at that port, when there is one, and not the proxy.",
     'Capture scans such a request as a request to `localhost`, and as one to a model API host as well when the proxy routes its path to an upstream whose `target` is one, and does not leave the reply to the proxy.',
     'When the request reaches the proxy, the proxy scans it as well on a path it routes to an `openai-api`, `mcp-http` or `a2a` upstream, and scans the reply: a `tools/call` whose `path` argument is `../../etc/hosts`, sent to `localhost` on a path routed to an `mcp-http` upstream, gives two `MCP-001` events where the same request sent to `127.0.0.1` gives one, and a reply that leaks the system prompt, to a request sent to `localhost` on a path routed to a `passthrough` upstream whose `target` is a model API host, gives two `OL-003` events.',
   ]) {
-    assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
+    assert.ok(localhostParagraph.includes(said), `the Proxy section's paragraph on a request to localhost does not say: ${said}`)
   }
 })
 
@@ -636,14 +640,14 @@ test('with capture on as well, a request that reaches the proxy at 127.1 is scan
 
   const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
   const section = lines.slice(lines.indexOf('## Proxy') + 1)
-  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('With `capture: true` set as well, '))
-  assert.ok(paragraph, 'the Proxy section has no paragraph on capture')
+  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('A request that reaches the proxy at another host, '))
+  assert.ok(paragraph, 'the Proxy section has no paragraph on a request at another host')
   for (const said of [
     "A request that reaches the proxy at another host, a name other than `localhost` that Node passes to the system's resolver, such as `localhost.` on macOS, or `127.1` given as the `hostname` option of `http.request`, capture scans as a request to that host: it cannot tell from the name whether the request reaches the proxy, so it does not leave the request to it.",
     'The proxy scans it as well on a path it routes to an `openai-api`, `mcp-http` or `a2a` upstream, so a `tools/call` whose `path` argument is `../../etc/hosts`, sent that way on a path routed to an `mcp-http` upstream, gives two `MCP-001` events.',
     'On a path routed to a `passthrough` upstream, whose requests the proxy does not scan, capture alone scans it, and the same `tools/call` gives one `MCP-001` event.',
   ]) {
-    assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
+    assert.ok(paragraph.includes(said), `the Proxy section's paragraph on a request at another host does not say: ${said}`)
   }
   assert.ok(!paragraph.includes('is scanned by capture and by the proxy.'), 'the Proxy section says a request at another host is scanned by capture and by the proxy on every path')
 })
@@ -700,11 +704,11 @@ test("with capture on as well, a request to the proxy on a path no upstream rout
 
   const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
   const section = lines.slice(lines.indexOf('## Proxy') + 1)
-  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('With `capture: true` set as well, '))
-  assert.ok(paragraph, 'the Proxy section has no paragraph on capture')
+  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('The proxy answers a request on a path that starts with no `pathPrefix` with 404, '))
+  assert.ok(paragraph, 'the Proxy section has no paragraph on a request on a path no upstream routes')
   const said =
     "The proxy answers a request on a path that starts with no `pathPrefix` with 404, passes it to no upstream and does not scan it, so capture scans that request itself, as a request to the proxy's host: with the default `aiLayer.prompt.hosts`, which does not name the proxy's host, the MCP and A2A interceptors scan it and the prompt interceptor does not, and a `tools/call` whose `path` argument is `../../etc/hosts`, sent to `127.0.0.1` at the proxy's port on such a path, gives one `MCP-001` event."
-  assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
+  assert.ok(paragraph.includes(said), `the Proxy section's paragraph on a request on a path no upstream routes does not say: ${said}`)
 })
 
 // A request to the proxy's port at a name, such as `127.1` given as the
@@ -813,15 +817,15 @@ test('with capture on as well, a request that reaches the proxy at 127.1 gets ea
 
   const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
   const section = lines.slice(lines.indexOf('## Proxy') + 1)
-  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('With `capture: true` set as well, '))
-  assert.ok(paragraph, 'the Proxy section has no paragraph on capture')
+  const paragraph = section.slice(0, section.findIndex((line) => line.startsWith('## '))).find((line) => line.startsWith('A request that reaches the proxy at another host, '))
+  assert.ok(paragraph, 'the Proxy section has no paragraph on a request at another host')
   for (const said of [
     "When the proxy routes the path to an upstream whose `target` is a model API host, and the name is not one, capture also scans the request for the prompt interceptor, whatever the upstream's protocol, and does not leave the reply to the proxy, which scans it as well when the request reaches it.",
     'So a request at such a name gets each scan it gets at `127.0.0.1`, and two events for a match that capture and the proxy both find, as the `tools/call` above does:',
     'a chat request with a prompt injection, sent at `127.1` on a path routed to an upstream whose `target` is in `aiLayer.prompt.hosts`, gives the `PI-001` and `DE-001` events it gives at `127.0.0.1` on a `passthrough` route, and two of each on an `openai-api` route, where at `127.0.0.1` it gives one; a reply to it that leaks the system prompt gives two `OL-003` events on either route, where at `127.0.0.1` it gives one.',
     'Where the resolver answers `::1` for the name, the request does not reach the proxy, and capture alone scans it: on the `openai-api` route, that chat request gives one `PI-001` and one `DE-001` event.',
   ]) {
-    assert.ok(paragraph.includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
+    assert.ok(paragraph.includes(said), `the Proxy section's paragraph on a request at another host does not say: ${said}`)
   }
 })
 
