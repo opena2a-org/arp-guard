@@ -1030,10 +1030,11 @@ function isRequestWithBody(input: unknown): input is { headers: HeadersLike; bod
 // MAX_CAPTURE_BYTES, and never rejects. A web stream, as fetch gives, is
 // cancelled past that, which leaves the original to the agent, and also when
 // the agent is done with `kept`, the branch it reads, before the body has
-// arrived whole, which gives the bytes the copy holds then. A Node stream, as
-// node-fetch gives, is read to its end: node-fetch pipes the body into the
-// original and the copy alike, and the original moves on only as fast as the
-// copy is read. Null when a read of the copy fails, or a Node stream closes
+// arrived whole, which gives the bytes the copy holds then, as does a read of
+// the copy that fails when `kept` is given. A Node stream, as node-fetch
+// gives, is read to its end: node-fetch pipes the body into the original and
+// the copy alike, and the original moves on only as fast as the copy is read.
+// Null when a read of the copy fails with no `kept`, or a Node stream closes
 // before its end.
 function readCopy(stream: unknown, kept?: unknown): Promise<Read | null> {
   if (isRecord(stream) && typeof stream.getReader === 'function') return readCapped(stream as unknown as ByteStream, kept);
@@ -1069,6 +1070,10 @@ function drainCapped(stream: NodeStream): Promise<Read | null> {
 // which include every byte the agent read of `kept`, are scanned: the rest of
 // the body does not arrive, as with no hook. When `kept` closes at the end of
 // the body, the copy already holds the rest of it, and no read of it waits.
+// When the body fails, as when the agent aborts the fetch, both branches of the
+// tee fail, and a read of the copy with them: the bytes the copy holds then are
+// scanned in the same way. With no `kept`, as for the body of a request, a read
+// of the copy that fails gives null.
 async function readCapped(stream: ByteStream, kept?: unknown): Promise<Read | null> {
   let reader: ByteReader;
   try {
@@ -1113,7 +1118,7 @@ async function readCapped(stream: ByteStream, kept?: unknown): Promise<Read | nu
       chunks.push(Buffer.from(value));
     }
   } catch {
-    return null;
+    return kept === undefined || kept === null ? null : { bytes: Buffer.concat(chunks) };
   } finally {
     try {
       reader.releaseLock();
