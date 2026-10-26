@@ -154,8 +154,11 @@ type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunctio
 type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean; named: boolean };
 // The target capture scans a request as sent to, whether it scans the request
 // as one to a model API host, and whether it leaves the reply to ARP's proxy,
-// which scans the reply to a request it passes on.
-type Route = { target: Target; model: boolean; proxied: boolean };
+// which scans the reply to a request it passes on. `proxyScans` is the
+// protocol of the upstream the proxy passes the request to when the proxy
+// scans the request by it, or null: capture does not scan again what the proxy
+// reads of the request.
+type Route = { target: Target; model: boolean; proxied: boolean; proxyScans: string | null };
 type HostRule = { host: string; port: string | null; suffix: boolean };
 type ByteReader = {
   read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -216,12 +219,15 @@ export class AILayerCapture {
 
   /**
    * Leaves a request to ARP's proxy, on 127.0.0.1 at `port`, to the proxy: one
-   * to `port` at a host `reachesProxyHost` accepts. The proxy scans it, unless
-   * `proxy.upstreams` routes it to an upstream whose requests the proxy does
-   * not scan, such as a `passthrough` one, or to none. Capture scans a request
-   * routed to such an upstream as sent to the upstream's `target`, and leaves
-   * its reply to the proxy; it scans one routed to none as sent to the proxy's
-   * host.
+   * to `port` at a host `reachesProxyHost` accepts. Capture scans a request
+   * `proxy.upstreams` routes to an upstream as sent to the upstream's
+   * `target`, and leaves its reply to the proxy. On an `openai-api`,
+   * `mcp-http` or `a2a` upstream, the proxy scans the request by that
+   * protocol, and capture does not scan again the parts the proxy reads; it
+   * scans the rest, such as a `tool` turn, which the proxy does not read. The
+   * proxy does not scan a request to an upstream of another protocol, such as
+   * `passthrough`. Capture scans a request routed to no upstream as sent to the
+   * proxy's host.
    *
    * A request to `port` at a name, which `reachesProxyHost` does not accept,
    * reaches the proxy when the system's resolver gives 127.0.0.1 for the name
@@ -240,20 +246,20 @@ export class AILayerCapture {
     return this.active && !isArpOwnWork();
   }
 
-  // How capture scans a request to `requested`: null when it does not, as when
-  // it leaves the request to ARP's proxy. The proxy answers a request it routes
-  // to no upstream with 404, passes it on to none and does not scan it, so
-  // capture scans that request as sent to the proxy's host. To a host other
-  // than a model API's, capture scans a request for the MCP and A2A
-  // interceptors alone, so with neither on, it does not read the body, nor
-  // report one larger than MAX_CAPTURE_BYTES.
+  // How capture scans a request to `requested`: null when it does not. The
+  // proxy answers a request it routes to no upstream with 404, passes it on to
+  // none and does not scan it, so capture scans that request as sent to the
+  // proxy's host. To a host other than a model API's, capture scans a request
+  // for the MCP and A2A interceptors alone, so with neither on, it does not
+  // read the body, nor report one larger than MAX_CAPTURE_BYTES.
   private route(requested: Target): Route | null {
     let target = requested;
     let proxied = false;
+    let proxyScans: string | null = null;
     const upstream =
       target.port === this.proxyPort && target.atProxyHost ? proxyUpstream(this.proxyConfig?.upstreams, target.path) : undefined;
     if (upstream) {
-      if (PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) return null;
+      if (PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) proxyScans = upstream.protocol;
       target = fetchTarget(upstream.target) ?? target;
       proxied = true;
     }
@@ -271,7 +277,7 @@ export class AILayerCapture {
       model = passedOnTo !== null && this.isModelHost(passedOnTo);
     }
     if (!model && !this.mcp && !this.a2a) return null;
-    return { target, model, proxied };
+    return { target, model, proxied, proxyScans };
   }
 
   async start(): Promise<void> {
@@ -346,19 +352,20 @@ export class AILayerCapture {
   // request back. Capture reads what it scans from the arguments before that
   // call, and the body of a Request from a copy, which it scans once whole.
   private captureFetch(original: AnyFunction, thisArg: unknown, args: unknown[]): unknown {
-    let request: { target: Target; model: boolean; proxied: boolean; body: Body | Promise<Body> } | null = null;
+    let request: { route: Route; body: Body | Promise<Body> } | null = null;
     try {
       const requested = fetchTarget(args[0]);
       const route = requested && this.route(requested);
-      if (route) request = { ...route, body: fetchBody(args[0], args[1], route.model) };
+      if (route) request = { route, body: fetchBody(args[0], args[1], route.model) };
     } catch {
       // Capture never stands between the agent and its request.
     }
     if (request === null) return original.apply(thisArg, args);
     const result = capturedFetch.run(true, () => original.apply(thisArg, args));
-    const { target, model, proxied, body } = request;
-    if (body instanceof Promise) void body.then((read) => this.takeRequest(target, model, read));
-    else this.takeRequest(target, model, body);
+    const { route, body } = request;
+    const { target, model, proxied } = route;
+    if (body instanceof Promise) void body.then((read) => this.takeRequest(route, read));
+    else this.takeRequest(route, body);
     // ARP's proxy scans the reply to a request it passes on.
     if (!model || proxied || !isPromiseLike(result)) return result;
     return result.then((response) => {
@@ -368,9 +375,9 @@ export class AILayerCapture {
   }
 
   // Scans a request body, or reports one that is too large to scan.
-  private takeRequest(target: Target, model: boolean, body: Body): void {
-    if (typeof body === 'string') safely(() => this.scanRequest(target, model, body));
-    else if (body !== null) safely(() => this.reportOverLimit(target, model, 'request', body.over, undefined, body.atLeast));
+  private takeRequest(route: Route, body: Body): void {
+    if (typeof body === 'string') safely(() => this.scanRequest(route, body));
+    else if (body !== null) safely(() => this.reportOverLimit(route.target, route.model, 'request', body.over, undefined, body.atLeast));
   }
 
   private watchFetchResponse(target: Target, response: FetchResponse): void {
@@ -411,7 +418,7 @@ export class AILayerCapture {
               if (typeof endArgs[0] !== 'function') body.add(endArgs[0], endArgs[1]);
               const text = body.text();
               const over = body.over();
-              if (text !== null) self.scanRequest(target, model, text);
+              if (text !== null) self.scanRequest(route, text);
               else if (over !== null) self.reportOverLimit(target, model, 'request', over);
             });
           }
@@ -537,16 +544,18 @@ export class AILayerCapture {
     return this.prompt !== null && matchesHost(this.hosts, target);
   }
 
-  private scanRequest(target: Target, model: boolean, text: string): void {
+  // On a route to an `openai-api` upstream, ARP's proxy scans the content of
+  // the turns `proxyReadsContent` gives, so capture does not take it.
+  private scanRequest({ target, model, proxyScans }: Route, text: string): void {
     if (!model && !text.includes('"jsonrpc"')) return;
     const body = parseJson(text);
     if (body === undefined) return;
     if (model && this.prompt) {
-      for (const input of promptInputs(body)) {
+      for (const input of promptInputs(body, proxyScans === 'openai-api' ? proxyReadsContent(body) : undefined)) {
         if (this.prompt.scanInput(input).truncated) this.reportTruncated('prompt', 'the input', input.length, { direction: 'input' });
       }
     }
-    this.scanJsonRpc(body, target.origin);
+    this.scanJsonRpc(body, target.origin, proxyScans);
   }
 
   private scanResponse(text: string): void {
@@ -563,17 +572,24 @@ export class AILayerCapture {
     if (message !== undefined) this.scanJsonRpc(message, null);
   }
 
-  private scanJsonRpc(body: unknown, to: string | null): void {
+  // `proxyScans` is the protocol by which ARP's proxy scans the request. The
+  // proxy reads no message of a batch. Of a body that is one message, it scans
+  // a `tools/call` on `mcp-http`, and on `a2a` the text parts of a message
+  // `proxyReadsA2AParts` accepts, so capture does not scan those again.
+  private scanJsonRpc(body: unknown, to: string | null, proxyScans: string | null = null): void {
+    const batch = Array.isArray(body);
     for (const message of Array.isArray(body) ? body : [body]) {
       if (!isRecord(message) || message.jsonrpc !== '2.0' || typeof message.method !== 'string') continue;
       const params = message.params;
       if (this.mcp && message.method === 'tools/call' && isRecord(params) && typeof params.name === 'string') {
+        if (!batch && proxyScans === 'mcp-http') continue;
         const toolName = params.name;
         const args = isRecord(params.arguments) ? params.arguments : {};
         if (this.mcp.scanToolCall(toolName, args).truncated) {
           this.reportTruncated('mcp-protocol', `the arguments of tool "${toolName}"`, argumentsLength(args), { toolName });
         }
       } else if (this.a2a && to !== null && A2A_METHODS.has(message.method)) {
+        if (!batch && proxyScans === 'a2a' && proxyReadsA2AParts(message)) continue;
         const text = a2aText(params);
         if (text.trim() === '') continue;
         this.a2a.scanMessage(this.agentName, to, text);
@@ -705,21 +721,52 @@ class BodyCollector {
  * assistant turn, so a turn is not scanned again each time the conversation is
  * sent. Assistant turns at the end of a request are a prefill, text the model
  * continues its reply from: the last assistant turn is then the last one
- * before them, so the user turn a prefill follows is taken.
+ * before them, so the user turn a prefill follows is taken. The `content` of
+ * a turn in `scannedContent`, which ARP's proxy scans, is not taken.
  */
-export function promptInputs(body: unknown): string[] {
+export function promptInputs(body: unknown, scannedContent?: ReadonlySet<unknown>): string[] {
   if (!isRecord(body)) return [];
   const texts: string[] = [];
   for (const key of ['messages', 'contents', 'input']) {
     const value = body[key];
     if (key === 'input' && typeof value === 'string') texts.push(value);
-    else if (Array.isArray(value)) texts.push(...newTurnTexts(value));
+    else if (Array.isArray(value)) texts.push(...newTurnTexts(value, scannedContent));
   }
   collectText(Array.isArray(body.prompt) ? body.prompt.filter((p) => typeof p === 'string') : body.prompt, texts);
   return texts.filter((text) => text.trim() !== '');
 }
 
-function newTurnTexts(turns: unknown[]): string[] {
+// The turns of `messages` whose `content` ARP's proxy scans on a route to an
+// `openai-api` upstream: each `user` turn whose content is a string. The proxy
+// reads the turns in order and stops at one that is null, whose role it
+// cannot read.
+function proxyReadsContent(body: unknown): Set<unknown> {
+  const turns = new Set<unknown>();
+  if (!isRecord(body) || !Array.isArray(body.messages)) return turns;
+  for (const turn of body.messages) {
+    if (turn === null) break;
+    if (isRecord(turn) && turn.role === 'user' && typeof turn.content === 'string') turns.add(turn);
+  }
+  return turns;
+}
+
+// True when ARP's proxy, on a route to an `a2a` upstream, scans as text each
+// text part capture takes from `message`, a body that is one message. The
+// proxy reads the parts whose `type` is `text`, and not a part marked
+// `kind: 'text'` alone. It reads no part of a body with a string `content`,
+// which it scans in their place, nor of one with a part that is null, which it
+// reports as a body it cannot parse. When it gets no text from the parts, it
+// scans the body as JSON text, in which a line feed in a part is the two
+// characters `\n`, so a match across it is not found there.
+function proxyReadsA2AParts(message: Record<string, unknown>): boolean {
+  if (typeof message.content === 'string') return false;
+  const params = message.params;
+  const parts = isRecord(params) && isRecord(params.message) ? params.message.parts : undefined;
+  if (!Array.isArray(parts)) return false;
+  return parts.every((part) => part !== null && !(isRecord(part) && part.kind === 'text' && part.type !== 'text' && typeof part.text === 'string'));
+}
+
+function newTurnTexts(turns: unknown[], scannedContent?: ReadonlySet<unknown>): string[] {
   let end = turns.length;
   while (end > 0 && isAssistantTurn(turns[end - 1])) end -= 1;
   let start = 0;
@@ -732,7 +779,7 @@ function newTurnTexts(turns: unknown[]): string[] {
     if (typeof turn === 'string') {
       texts.push(turn);
     } else if (isRecord(turn) && ((typeof turn.role === 'string' && INPUT_ROLES.has(turn.role)) || turn.type === 'function_call_output')) {
-      collectText(turn.content, texts);
+      if (!scannedContent?.has(turn)) collectText(turn.content, texts);
       collectText(turn.parts, texts);
       collectText(turn.output, texts);
     }

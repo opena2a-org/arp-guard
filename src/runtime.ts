@@ -75,8 +75,8 @@ export class AgentRuntimeProtection extends EngineAgentRuntimeProtection {
         await super.stop();
         throw error;
       }
-      // Capture leaves a request the agent sends to the proxy to the proxy,
-      // unless the proxy passes it to an upstream unscanned, or to none.
+      // Capture leaves to the proxy what the proxy reads of a request the agent
+      // sends to it, and scans the rest itself.
       this.aiCapture.leaveToProxy(this.loopbackProxy.get()?.getPort() ?? null, this.loopbackProxy.config);
     }
     await this.aiCapture.start();
