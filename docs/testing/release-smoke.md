@@ -551,6 +551,66 @@ model received: 2
 Before the fix, the second line read `127.1: 200 no event`: the proxy passed the request on
 to the model, and neither layer scanned it.
 
+### 5.5 A request to the proxy's port at `localhost`, on an `openai-api` route to a host not in `aiLayer.prompt.hosts` ([#226](https://github.com/opena2a-org/arp-guard/issues/226))
+
+**VERIFY:** with `aiLayer.prompt`, `aiLayer.mcp` and `aiLayer.a2a` each set to
+`{ enabled: true, capture: true }`, the default `aiLayer.prompt.hosts`, and an `openai-api`
+upstream whose target is a server on `127.0.0.1`, which that list does not name, send a chat
+request the prompt interceptor flags to `localhost` at the proxy's port, on a host whose
+resolver does not answer 127.0.0.1 first for the name, and compare the input events with the
+same request sent to `127.0.0.1`.
+
+The script stands in for that resolver with a `lookup` that answers `::1`, where nothing
+listens at the proxy's port, and for one that answers `127.0.0.1` first with a `lookup`
+that answers that, as §5.2 does.
+
+```bash
+cat > cell-226.js <<'EOF'
+const { INJECTION, chat, serve, protect, post, eventsOf } = require('./walk');
+
+// A lookup that answers `address` for every name, as a resolver that answers it first does.
+const answering = (address, family) => (hostname, options, callback) =>
+  options.all ? callback(null, [{ address, family }]) : callback(null, address, family);
+
+(async () => {
+  const model = await serve();
+  const on = { enabled: true, capture: true };
+  // The default aiLayer.prompt.hosts, which does not name the model's host.
+  const { arp, events } = protect({ prompt: on, mcp: on, a2a: on }, [
+    { pathPrefix: '/openai', target: 'http://' + model.host, protocol: 'openai-api' },
+  ]);
+  await arp.start();
+  const port = arp.getProxy().getPort();
+  const path = '/openai/v1/chat/completions';
+  const at = (hostname, lookup) => eventsOf(events, () => post({ hostname, port, path, body: chat(INJECTION), lookup }));
+  console.log('localhost, answered ::1:', await at('localhost', answering('::1', 6)));
+  console.log('localhost, answered 127.0.0.1:', await at('localhost', answering('127.0.0.1', 4)));
+  console.log('127.0.0.1:', await at('127.0.0.1'));
+  console.log('model received:', model.received);
+  await arp.stop();
+  model.close();
+})();
+EOF
+node cell-226.js
+```
+
+**EXPECTED:** the proxy scans a request it passes to an `openai-api` upstream for the prompt
+interceptor whatever `aiLayer.prompt.hosts` says, so capture scans a request at a name on
+that route for the prompt interceptor as well, as it cannot tell whether the request
+reaches the proxy. The request to `localhost` that reaches no listener is scanned by
+capture; the one that reaches the proxy is scanned by capture and by the proxy; the one to
+`127.0.0.1` is left to the proxy:
+
+```text
+localhost, answered ::1: ECONNREFUSED prompt input DE-001, prompt input PI-001
+localhost, answered 127.0.0.1: 200 prompt input DE-001, prompt input DE-001, prompt input PI-001, prompt input PI-001
+127.0.0.1: 200 prompt input DE-001, prompt input PI-001
+model received: 2
+```
+
+Before the fix, the first line read `localhost, answered ::1: ECONNREFUSED no event`, and the
+second gave one event of each, the proxy's.
+
 Fail the release if a cell prints anything other than its EXPECTED block.
 
 ---

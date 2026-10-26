@@ -234,7 +234,7 @@ export class AILayerCapture {
    * first, which capture cannot tell, so capture leaves neither the request
    * nor its reply to the proxy. It scans the request as sent to that name, and
    * as a request to a model API host as well when `proxy.upstreams` routes its
-   * path to an upstream whose `target` is one.
+   * path to an `openai-api` upstream, or to an upstream whose `target` is one.
    */
   leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
     this.proxyPort = port === null ? null : String(port);
@@ -269,12 +269,14 @@ export class AILayerCapture {
     // request to the proxy's port at a name reaches the proxy or another
     // listener at that port, such as one on ::1. Capture leaves neither the
     // request nor its reply to the proxy, and scans the request as one to a
-    // model API host as well when the proxy would pass it on to an upstream
-    // whose `target` is one, whatever the upstream's protocol.
-    if (!model && target.named && target.port === this.proxyPort) {
+    // model API host as well when the proxy would pass it on to an
+    // `openai-api` upstream, whose requests the proxy scans for the prompt
+    // interceptor whatever `aiLayer.prompt.hosts` says, or to an upstream of
+    // another protocol whose `target` is one.
+    if (!model && this.prompt !== null && target.named && target.port === this.proxyPort) {
       const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
       const passedOnTo = upstream ? fetchTarget(upstream.target) : null;
-      model = passedOnTo !== null && this.isModelHost(passedOnTo);
+      model = upstream?.protocol === 'openai-api' || (passedOnTo !== null && this.isModelHost(passedOnTo));
     }
     if (!model && !this.mcp && !this.a2a) return null;
     return { target, model, proxied, proxyScans };

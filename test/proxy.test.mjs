@@ -617,13 +617,15 @@ test('with capture on as well, a request that reaches the proxy at 127.1 is scan
     await arp.start()
     const port = arp.getProxy().getPort()
     // Capture scans each request as sent to http://127.1:<port>, which is not
-    // a model API host, nor is the upstream.
+    // a model API host, nor is the upstream. On the openai-api route it scans
+    // the request for the prompt interceptor all the same, as the proxy does.
     const toThatHost = `${spoofing} from my-agent to http://127.1:${port}`
-    assert.deepEqual(await send(port, '/openai/v1/chat/completions', chat(INJECTION), 2), {
-      prompt: [
-        'input [PI-001] Instruction override attempt — direct override of system instructions',
-        'input [DE-001] System prompt extraction — attempting to extract system instructions',
-      ],
+    const injected = [
+      'input [PI-001] Instruction override attempt — direct override of system instructions',
+      'input [DE-001] System prompt extraction — attempting to extract system instructions',
+    ]
+    assert.deepEqual(await send(port, '/openai/v1/chat/completions', chat(INJECTION), 4), {
+      prompt: [...injected, ...injected],
       mcp: [],
       a2a: [],
     })
@@ -1022,6 +1024,139 @@ test('with capture on as well, a body over 1 MiB sent through the proxy on an op
 
   const said = "and reports a body larger than 1 MiB, which it does not scan, as it does one sent to the upstream's `target`."
   assert.ok(proxyParagraph('With `capture: true` set as well, ').includes(said), `the Proxy section's paragraph on capture does not say: ${said}`)
+})
+
+// The proxy scans the requests it passes to an `openai-api` upstream for the
+// prompt interceptor whatever `aiLayer.prompt.hosts` says. Before, capture
+// scanned a request to the proxy's port at a name the list does not hold for
+// the prompt interceptor only when the proxy routed its path to an upstream
+// whose `target` the list held: with the default list and an `openai-api`
+// upstream whose target is a server on 127.0.0.1, a chat request with a prompt
+// injection, sent to localhost at the proxy's port, that reached a listener on
+// ::1 at that port gave no event. A lookup that answers ::1 stands in for a
+// resolver that answers it first here, where nothing listens at the proxy's
+// port, then where a listener on ::1 at that port answers. On a passthrough
+// route to the same target, whose requests the proxy does not scan, capture
+// does not scan the request for the prompt interceptor either.
+test("with capture on as well, a request to the proxy's port at a name, on a path routed to an openai-api upstream whose target is not in aiLayer.prompt.hosts, is scanned by capture for the prompt interceptor, and its reply as well, as the Proxy section says", async () => {
+  const reply = JSON.stringify({ choices: [{ message: { role: 'assistant', content: LEAK } }] })
+  const model = await serve(() => ({ body: reply }))
+  // The default aiLayer.prompt.hosts, which does not name the model's host.
+  const { arp, events, cleanup } = protect(
+    { prompt: { enabled: true, capture: true }, mcp: { enabled: true, capture: true }, a2a: { enabled: true, capture: true } },
+    [
+      { pathPrefix: '/openai', target: `http://${model.host}`, protocol: 'openai-api' },
+      { pathPrefix: '/model', target: `http://${model.host}`, protocol: 'passthrough' },
+    ],
+  )
+  const headers = { 'content-type': 'application/json' }
+  // A lookup that answers `address` for every name.
+  const answering = (address, family) => (hostname, options, callback) =>
+    options?.all ? callback(null, [{ address, family }]) : callback(null, address, family)
+  // The match each event reports, sorted.
+  const matches = (all) =>
+    all
+      .filter((e) => ['prompt', 'mcp-protocol', 'a2a-protocol'].includes(e.source) && !e.data.correlatedSources)
+      .map((e) => [e.source, e.data.direction, e.data.patternId ?? e.description].filter(Boolean).join(' '))
+      .sort()
+  // The status `send()` resolves with, and the matches its request gives,
+  // once `count` have come.
+  const outcome = async (send, count) => {
+    events.length = 0
+    const status = await send()
+    await until(events, (all) => matches(all).length >= count)
+    await sleep(200)
+    return { status, matches: matches(events) }
+  }
+  const injected = ['prompt input DE-001', 'prompt input PI-001']
+  const leaked = 'prompt output OL-003'
+  const twice = [...injected, ...injected, leaked, leaked].sort()
+  // A listener on ::1 at the proxy's port, started last, which answers as the
+  // model does, and the requests it gets.
+  let atIPv6 = null
+  let atIPv6Received = 0
+  try {
+    await arp.start()
+    const port = arp.getProxy().getPort()
+    // Sends a chat request with a prompt injection with `http.request` at
+    // `hostname`, which `lookup` resolves when given. Resolves with the status
+    // of the reply, or with the error code when no listener takes the request.
+    const chatAt = (hostname, path, lookup) => () =>
+      new Promise((resolve) => {
+        const req = http.request({ hostname, port, path, method: 'POST', headers, ...(lookup && { lookup }) }, (res) => {
+          res.resume()
+          res.on('end', () => resolve(res.statusCode))
+        })
+        req.on('error', (error) => resolve(error.code))
+        req.end(chat(INJECTION))
+      })
+    const openai = '/openai/v1/chat/completions'
+    // Answered ::1, the request reaches no listener, and capture alone scans it.
+    assert.deepEqual(await outcome(chatAt('localhost', openai, answering('::1', 6)), 2), { status: 'ECONNREFUSED', matches: injected })
+    // On the passthrough route, the proxy would not scan the request, and
+    // capture scans it for the MCP and A2A interceptors alone.
+    assert.deepEqual(await outcome(chatAt('localhost', '/model/v1/chat/completions', answering('::1', 6)), 0), { status: 'ECONNREFUSED', matches: [] })
+    // Where the request reaches the proxy, capture and the proxy each scan it
+    // and its reply.
+    assert.deepEqual(await outcome(chatAt('localhost', openai, answering('127.0.0.1', 4)), 6), { status: 200, matches: twice })
+    assert.deepEqual(await outcome(chatAt('127.1', openai), 6), { status: 200, matches: twice })
+    const fetched = async () => {
+      const res = await fetch(`http://localhost:${port}${openai}`, { method: 'POST', headers, body: chat(INJECTION) })
+      await res.text()
+      return res.status
+    }
+    assert.deepEqual(await outcome(fetched, 6), { status: 200, matches: twice })
+    // At 127.0.0.1, capture leaves the request to the proxy, which scans it
+    // and its reply once.
+    assert.deepEqual(await outcome(chatAt('127.0.0.1', openai), 3), { status: 200, matches: [...injected, leaked].sort() })
+    // Each request at localhost answered 127.0.0.1, at 127.1, with fetch at
+    // localhost and at 127.0.0.1 reached the proxy, which passed it on.
+    assert.equal(model.received.length, 4)
+    // Answered ::1 where a listener on ::1 at the proxy's port answers, the
+    // request reaches that listener, and capture alone scans it and the reply.
+    atIPv6 = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        atIPv6Received += 1
+        res.writeHead(200, { 'content-type': 'application/json', connection: 'close' }).end(reply)
+      })
+    })
+    await new Promise((resolve, reject) => {
+      atIPv6.once('error', reject)
+      atIPv6.listen(port, '::1', resolve)
+    })
+    assert.deepEqual(await outcome(chatAt('localhost', openai, answering('::1', 6)), 3), { status: 200, matches: [...injected, leaked].sort() })
+    assert.equal(atIPv6Received, 1)
+    assert.equal(model.received.length, 4)
+  } finally {
+    if (atIPv6?.listening) {
+      atIPv6.closeAllConnections?.()
+      await new Promise((resolve) => atIPv6.close(resolve))
+    }
+    await arp.stop()
+    await model.close()
+    cleanup()
+  }
+
+  const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
+  const section = lines.slice(lines.indexOf('## Proxy') + 1)
+  const paragraphs = section.slice(0, section.findIndex((line) => line.startsWith('## ')))
+  const atAnotherHost = paragraphs.find((line) => line.startsWith('A request that reaches the proxy at another host, '))
+  assert.ok(atAnotherHost, 'the Proxy section has no paragraph on a request at another host')
+  for (const said of [
+    "It does so as well on a path the proxy routes to an `openai-api` upstream, whatever the upstream's `target`, as the proxy scans the requests it passes to such an upstream for the prompt interceptor whatever `aiLayer.prompt.hosts` says.",
+    'With the default `aiLayer.prompt.hosts`, which does not name a server on `127.0.0.1`, that chat request, sent at `127.1` on a path routed to an `openai-api` upstream whose `target` is such a server, gives two `PI-001` and two `DE-001` events, and a reply to it that leaks the system prompt gives two `OL-003` events.',
+  ]) {
+    assert.ok(atAnotherHost.includes(said), `the Proxy section's paragraph on a request at another host does not say: ${said}`)
+  }
+  const atLocalhost = paragraphs.find((line) => line.startsWith('Capture does not leave a request to the name `localhost` to the proxy, '))
+  assert.ok(atLocalhost, 'the Proxy section has no paragraph on a request to localhost')
+  for (const said of [
+    "On a path the proxy routes to an `openai-api` upstream, capture scans a request to `localhost` as one to a model API host whatever the upstream's `target`, as it does a request at another name.",
+    "With the default `aiLayer.prompt.hosts` and an `openai-api` upstream whose `target` is a server on `127.0.0.1`, a chat request with a prompt injection, sent to `localhost` at the proxy's port, gives one `PI-001` and one `DE-001` event where the resolver answers `::1` and the request does not reach the proxy, and two of each where it reaches the proxy; a reply to it that leaks the system prompt gives one `OL-003` event where it comes from a listener on `::1` at that port, and two where it comes through the proxy.",
+  ]) {
+    assert.ok(atLocalhost.includes(said), `the Proxy section's paragraph on a request to localhost does not say: ${said}`)
+  }
 })
 
 test('with no proxy in the config, start() starts none', async () => {
