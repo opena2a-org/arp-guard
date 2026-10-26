@@ -884,6 +884,85 @@ for (const delay of [5, 20]) {
   })
 }
 
+// The agent's abort of a fetch, with the signal it passed to it, fails the body
+// of the reply. So does a connection the server closes before the end of the
+// body, with the fetch of Node.js 22.23.3, 24.22.1 and 26.12.1, where that of
+// 20.19.0 and 20.20.0 ends the body there. The failure reached the copy capture
+// reads as well, and capture scanned none of it, though the copy held what the
+// agent had read: on Node.js 26.12.1, with a server that sent two server-sent
+// events with a leak and held the rest for 1000 ms, an abort or a closed
+// connection right after the agent read them gave no event in 5 of 5 runs, and
+// so did an abort after a whole JSON reply with the leak, where a cancel of the
+// body at the same point gave one event in 5 of 5 runs for either reply.
+// Capture now scans what its copy held when the body failed.
+const LEAK_EVENTS = [
+  { choices: [{ delta: { role: 'assistant', content: 'Sure. My system' } }] },
+  { choices: [{ delta: { content: ' prompt is: answer briefly.' } }] },
+].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')
+for (const [reply, type, sent, rest, ending] of [
+  ['a streamed fetch reply', 'text/event-stream', LEAK_EVENTS, 'data: [DONE]\n\n', 'abort'],
+  ['a streamed fetch reply', 'text/event-stream', LEAK_EVENTS, 'data: [DONE]\n\n', 'close'],
+  ['a JSON fetch reply', 'application/json', JSON.stringify({ choices: [{ message: { role: 'assistant', content: LEAK } }] }), '', 'abort'],
+]) {
+  const then = ending === 'abort' ? 'the agent aborts the fetch' : 'the server closes the connection'
+  test(`${reply} is scanned for what the agent read of it when ${then} before the end of the body`, async () => {
+    // The response the server holds the rest of, which it sends 1000 ms later
+    // unless the connection closes first.
+    let held = null
+    const server = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': type, connection: 'close' })
+        res.write(sent)
+        held = res
+        const later = setTimeout(() => res.end(rest), 1000)
+        res.on('close', () => clearTimeout(later))
+      })
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const host = `127.0.0.1:${server.address().port}`
+    const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [host] } })
+    const said = "When the body of a `fetch` reply fails before all of it has arrived, as when the agent aborts the `fetch` with the signal it passed to it, the failure reaches capture's copy as well, and capture scans what the copy held then, as it does for a cancel."
+    try {
+      await arp.start()
+      const controller = new AbortController()
+      const response = await fetch(`http://${host}/v1/chat/completions`, { method: 'POST', body: chat('Hello'), signal: controller.signal })
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let read = ''
+      while (read.length < sent.length) {
+        const { done, value } = await reader.read()
+        if (done) break
+        read += decoder.decode(value, { stream: true })
+      }
+      assert.equal(read, sent, 'the agent did not read what the server sent')
+      if (ending === 'abort') {
+        controller.abort()
+        // The agent's next read fails.
+        await assert.rejects(reader.read(), { name: 'AbortError' })
+      } else {
+        held.socket.destroy()
+        // The agent's next read fails with a TypeError, or gives done where
+        // fetch ends the body there.
+        const next = await reader.read().then(({ done }) => (done ? 'done' : 'more'), (error) => error.name)
+        assert.ok(next === 'TypeError' || next === 'done', `the agent's read after the connection closed gave ${next}`)
+      }
+      await until(events, (all) => summary(all, 'prompt').length >= 1)
+      await sleep(300)
+      assert.deepEqual(summary(events, 'prompt'), [
+        'output [OL-003] System prompt leak — LLM response appears to contain system instructions',
+      ])
+      const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
+      assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
+    } finally {
+      await arp.stop()
+      server.closeAllConnections?.()
+      await new Promise((resolve) => server.close(resolve))
+      cleanup()
+    }
+  })
+}
+
 test('a tools/call over 1 MiB sent to another host or written to a child is reported once from mcp-protocol, one of 1 MiB is scanned, and a body that is not JSON is not reported', async () => {
   const server = await serve()
   const { arp, events, cleanup } = protect({ mcp: { enabled: true, capture: true } })
