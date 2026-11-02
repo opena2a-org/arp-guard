@@ -224,10 +224,12 @@ export class AILayerCapture {
    * `target`, and leaves its reply to the proxy. On an `openai-api`,
    * `mcp-http` or `a2a` upstream, the proxy scans the request by that
    * protocol, and capture does not scan again the parts the proxy reads; it
-   * scans the rest, such as a `tool` turn, which the proxy does not read. The
-   * proxy does not scan a request to an upstream of another protocol, such as
-   * `passthrough`. Capture scans a request routed to no upstream as sent to the
-   * proxy's host.
+   * scans the rest, such as a `tool` turn, which the proxy does not read. On
+   * an `openai-api` upstream it scans the rest as a request to a model API host
+   * whatever the `target`, as the proxy scans the request for the prompt
+   * interceptor whatever `aiLayer.prompt.hosts` says. The proxy does not scan
+   * a request to an upstream of another protocol, such as `passthrough`.
+   * Capture scans a request routed to no upstream as sent to the proxy's host.
    *
    * A request to `port` at a name, which `reachesProxyHost` does not accept,
    * reaches the proxy when the system's resolver gives 127.0.0.1 for the name
@@ -264,6 +266,11 @@ export class AILayerCapture {
       proxied = true;
     }
     let model = this.isModelHost(target);
+    // The proxy scans a request it passes to an `openai-api` upstream for the
+    // prompt interceptor whatever `aiLayer.prompt.hosts` says, and reads only
+    // part of it, so capture scans the rest as a request to a model API host
+    // whatever the upstream's `target`, as it does a request at a name below.
+    if (!model && this.prompt !== null && proxyScans === 'openai-api') model = true;
     // The system's resolver reads a name, such as localhost or 127.1, and need
     // not answer 127.0.0.1 for it first, so capture cannot tell whether a
     // request to the proxy's port at a name reaches the proxy or another
