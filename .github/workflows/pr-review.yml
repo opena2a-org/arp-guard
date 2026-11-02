@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   review:
-    name: Claude Code Review
+    name: Automated code review
     runs-on: ubuntu-latest
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -224,7 +224,7 @@ jobs:
         #
         # Pinned by SHA, never @main: @main would move every consuming repo the
         # instant that file changed, which is the same coupling this replaces.
-        uses: opena2a-org/.github/actions/claude-review@025b1897886f261c12ccc79da3f75d345842c897
+        uses: opena2a-org/.github/actions/code-review@6920ca909c144223e9e31d7df01a7714aedaaf6c
         with:
           # A composite action cannot read `secrets`, so the caller passes it in.
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
