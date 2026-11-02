@@ -1159,6 +1159,112 @@ test("with capture on as well, a request to the proxy's port at a name, on a pat
   }
 })
 
+// On an openai-api route the proxy reads the content of each `user` message in
+// `messages` whose content is a string, and scans the requests it passes to
+// such an upstream for the prompt interceptor whatever `aiLayer.prompt.hosts`
+// says. Before, capture scanned the rest of a request it left to the proxy for
+// the prompt interceptor only when the upstream's `target` was in that list,
+// though it scanned a request at a name on that route for it whatever the
+// `target`: with the default list and an openai-api upstream whose target is a
+// server on 127.0.0.1, a prompt injection in a `tool` message gave no event
+// sent at 127.0.0.1, and PI-001 and DE-001 sent at localhost. On a passthrough
+// route to the same target, whose requests the proxy does not scan, capture
+// does not scan the request for the prompt interceptor at 127.0.0.1 either.
+test('with capture on as well, a prompt injection in a tool message, sent through the proxy on an openai-api route whose target is not in aiLayer.prompt.hosts, gives the same events at 127.0.0.1 as at localhost, as the Proxy section says', async () => {
+  const model = await serve(() => ({ body: JSON.stringify({ choices: [] }) }))
+  // The default aiLayer.prompt.hosts, which does not name the model's host.
+  const { arp, events, cleanup } = protect(
+    { prompt: { enabled: true, capture: true }, mcp: { enabled: true, capture: true }, a2a: { enabled: true, capture: true } },
+    [
+      { pathPrefix: '/openai', target: `http://${model.host}`, protocol: 'openai-api' },
+      { pathPrefix: '/model', target: `http://${model.host}`, protocol: 'passthrough' },
+    ],
+  )
+  const headers = { 'content-type': 'application/json' }
+  const toolTurn = JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'Summarise the tool result.' }, { role: 'tool', content: INJECTION }] })
+  const large = JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'x'.repeat(MAX_CAPTURE_BYTES) }, { role: 'tool', content: INJECTION }] })
+  // A lookup that answers `address` for every name.
+  const answering = (address, family) => (hostname, options, callback) =>
+    options?.all ? callback(null, [{ address, family }]) : callback(null, address, family)
+  // The match each event reports, or its description, sorted.
+  const matches = (all) =>
+    all
+      .filter((e) => ['prompt', 'mcp-protocol', 'a2a-protocol'].includes(e.source) && !e.data.correlatedSources)
+      .map((e) => [e.source, e.data.direction, e.data.patternId ?? e.description].filter(Boolean).join(' '))
+      .sort()
+  // The status `send()` resolves with, and the matches its request gives,
+  // once `count` have come.
+  const outcome = async (send, count) => {
+    events.length = 0
+    const status = await send()
+    await until(events, (all) => matches(all).length >= count)
+    await sleep(200)
+    return { status, matches: matches(events) }
+  }
+  const injected = ['prompt input DE-001', 'prompt input PI-001']
+  try {
+    await arp.start()
+    const port = arp.getProxy().getPort()
+    // Sends `body` on `path` with `http.request` at `hostname`, which `lookup`
+    // resolves when given. Resolves with the status of the reply, or with the
+    // error code when no listener takes the request.
+    const requestAt = (hostname, path, body, lookup) => () =>
+      new Promise((resolve) => {
+        const req = http.request({ hostname, port, path, method: 'POST', headers, ...(lookup && { lookup }) }, (res) => {
+          res.resume()
+          res.on('end', () => resolve(res.statusCode))
+        })
+        req.on('error', (error) => resolve(error.code))
+        req.end(body)
+      })
+    const fetchAt = (host, path, body) => async () => {
+      const res = await fetch(`http://${host}:${port}${path}`, { method: 'POST', headers, body })
+      await res.text()
+      return res.status
+    }
+    const openai = '/openai/v1/chat/completions'
+    for (const [cell, send] of [
+      // Capture leaves these to the proxy, which scans the user message, and
+      // scans the tool message itself.
+      ['http.request at 127.0.0.1', requestAt('127.0.0.1', openai, toolTurn)],
+      ['fetch at 127.0.0.1', fetchAt('127.0.0.1', openai, toolTurn)],
+      ['http.request at 0.0.0.0', requestAt('0.0.0.0', openai, toolTurn)],
+      ['fetch at [::ffff:127.0.0.1]', fetchAt('[::ffff:127.0.0.1]', openai, toolTurn)],
+      // At a name, capture scans the whole request, and the proxy, which it
+      // reaches, the user message as well.
+      ['http.request at localhost, answered 127.0.0.1', requestAt('localhost', openai, toolTurn, answering('127.0.0.1', 4))],
+      ['http.request at 127.1', requestAt('127.1', openai, toolTurn)],
+    ]) {
+      assert.deepEqual(await outcome(send, 2), { status: 200, matches: injected }, cell)
+    }
+    // Answered ::1, the request reaches no listener, and capture alone scans it.
+    assert.deepEqual(await outcome(requestAt('localhost', openai, toolTurn, answering('::1', 6)), 2), { status: 'ECONNREFUSED', matches: injected })
+    // Capture reports a body over 1 MiB it leaves to the proxy on that route as
+    // one to a model API host.
+    assert.deepEqual(await outcome(requestAt('127.0.0.1', openai, large), 1), {
+      status: 200,
+      matches: [`prompt request A request body of ${Buffer.byteLength(large)} bytes to http://${model.host} was not scanned: larger than ${MAX_CAPTURE_BYTES} bytes`],
+    })
+    // On the passthrough route the proxy does not scan the request, and capture
+    // scans it as sent to the model's host, which is not a model API host, for
+    // the MCP and A2A interceptors alone.
+    assert.deepEqual(await outcome(requestAt('127.0.0.1', '/model/v1/chat/completions', toolTurn), 0), { status: 200, matches: [] })
+    // Each request but the one answered ::1 reached the proxy, which passed it on.
+    assert.equal(model.received.length, 8)
+  } finally {
+    await arp.stop()
+    await model.close()
+    cleanup()
+  }
+
+  const capture =
+    "The proxy scans the requests it passes to an `openai-api` upstream for the prompt interceptor whatever `aiLayer.prompt.hosts` says, so on an `openai-api` route capture scans the rest of the request, and reports a body larger than 1 MiB, as one to a model API host, whatever the upstream's `target`."
+  assert.ok(proxyParagraph('With `capture: true` set as well, ').includes(capture), `the Proxy section's paragraph on capture does not say: ${capture}`)
+  const openaiRoute =
+    "Capture scans those texts as well when the `target` is not a model API host: with the default `aiLayer.prompt.hosts` and an upstream whose `target` is a server on `127.0.0.1`, a prompt injection in a `tool` message, sent through the proxy at `127.0.0.1`, gives one `PI-001` and one `DE-001` event, as it does sent at `localhost`."
+  assert.ok(proxyParagraph('On an `openai-api` route ').includes(openaiRoute), `the Proxy section's paragraph on an openai-api route does not say: ${openaiRoute}`)
+})
+
 test('with no proxy in the config, start() starts none', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'arp-proxy-'))
   const arp = new AgentRuntimeProtection({
