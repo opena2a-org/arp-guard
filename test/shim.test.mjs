@@ -50,6 +50,23 @@ test('the shim carries the homepage and the bugs URL of the root package, and bo
   assert.deepEqual(shim.bugs, { url: `${repository}/issues` })
 })
 
+// Both packages are built from the repository GitHub serves at this URL: in a
+// checkout, `gh repo view --json nameWithOwner --jq .nameWithOwner` prints
+// opena2a-org/arp-guard. Before, the three fields named
+// https://github.com/opena2a-org/agent-runtime-protection, which on 2026-11-03
+// answered 301 with a redirect to this URL. The release smoke test in
+// docs/testing/release-smoke.md checks the same fields in the packed packages
+// against `gh repo view`.
+const REPOSITORY = 'https://github.com/opena2a-org/arp-guard'
+
+test('the root package and the shim name the repository they are built from, by the name it has on GitHub', () => {
+  for (const pkg of [rootPackage, shim]) {
+    assert.equal(pkg.repository.url, `${REPOSITORY}.git`, `${pkg.name}: repository.url`)
+    assert.equal(pkg.homepage, `${REPOSITORY}#readme`, `${pkg.name}: homepage`)
+    assert.equal(pkg.bugs.url, `${REPOSITORY}/issues`, `${pkg.name}: bugs.url`)
+  }
+})
+
 // The shim is loaded the way an install loads it: by name, from a
 // `node_modules` directory that holds a copy of the files it publishes. Next
 // to the copy, under the root package's name, is a stand-in whose entry point

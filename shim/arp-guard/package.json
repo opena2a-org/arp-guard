@@ -14,11 +14,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/opena2a-org/agent-runtime-protection.git"
+    "url": "https://github.com/opena2a-org/arp-guard.git"
   },
-  "homepage": "https://github.com/opena2a-org/agent-runtime-protection#readme",
+  "homepage": "https://github.com/opena2a-org/arp-guard#readme",
   "bugs": {
-    "url": "https://github.com/opena2a-org/agent-runtime-protection/issues"
+    "url": "https://github.com/opena2a-org/arp-guard/issues"
   },
   "license": "Apache-2.0"
 }
