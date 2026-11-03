@@ -76,8 +76,12 @@ export class AgentRuntimeProtection extends EngineAgentRuntimeProtection {
         throw error;
       }
       // Capture leaves to the proxy what the proxy reads of a request the agent
-      // sends to it, and scans the rest itself.
-      this.aiCapture.leaveToProxy(this.loopbackProxy.get()?.getPort() ?? null, this.loopbackProxy.config);
+      // sends to it, and scans the rest itself. In the proxy's deny-all state,
+      // entered when `proxy.manifestPath` names a capability manifest that
+      // failed to load or verify, the proxy answers every request with 403 and
+      // reads none, so capture leaves it nothing.
+      const proxy = this.loopbackProxy.get();
+      this.aiCapture.leaveToProxy(proxy?.getPort() ?? null, this.loopbackProxy.config, proxy?.isManifestRejected() === true);
     }
     await this.aiCapture.start();
   }

@@ -194,6 +194,10 @@ export class AILayerCapture {
   // `upstreams` route the requests the agent sends to it.
   private proxyPort: string | null = null;
   private proxyConfig: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null;
+  // True while the proxy is in the deny-all state the engine's proxy enters
+  // when `proxy.manifestPath` names a capability manifest that fails to load
+  // or verify: it answers every request with 403 before it routes or scans it.
+  private proxyDeniesAll = false;
 
   constructor(engine: EventEngine, config: CaptureConfig) {
     const al = config.aiLayer;
@@ -237,10 +241,18 @@ export class AILayerCapture {
    * nor its reply to the proxy. It scans the request as sent to that name, and
    * as a request to a model API host as well when `proxy.upstreams` routes its
    * path to an `openai-api` upstream, or to an upstream whose `target` is one.
+   *
+   * `deniesAll` is true when the proxy is in its deny-all state, in which it
+   * answers every request with 403 before it routes or reads it, so capture
+   * leaves no part of a request to it: it scans all of a request routed to an
+   * `openai-api`, `mcp-http` or `a2a` upstream, as sent to the upstream's
+   * `target`, and on an `openai-api` upstream as a request to a model API host
+   * whatever the `target`, as it scans the rest outside that state.
    */
-  leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null): void {
+  leaveToProxy(port: number | null, proxy: { upstreams?: readonly ProxyUpstreamRoute[] } | null = null, deniesAll = false): void {
     this.proxyPort = port === null ? null : String(port);
     this.proxyConfig = port === null ? null : proxy;
+    this.proxyDeniesAll = port !== null && deniesAll;
   }
 
   // True when a hooked call is the agent's traffic to capture.
@@ -249,11 +261,15 @@ export class AILayerCapture {
   }
 
   // How capture scans a request to `requested`: null when it does not. The
-  // proxy answers a request it routes to no upstream with 404, passes it on to
-  // none and does not scan it, so capture scans that request as sent to the
-  // proxy's host. To a host other than a model API's, capture scans a request
-  // for the MCP and A2A interceptors alone, so with neither on, it does not
-  // read the body, nor report one larger than MAX_CAPTURE_BYTES.
+  // proxy answers a request it routes to no upstream with 404, or with 403 in
+  // its deny-all state, passes it on to none and does not scan it, so capture
+  // scans that request as sent to the proxy's host. In its deny-all state, the
+  // proxy answers a request on a path it routes to an upstream with 403 as
+  // well, before it reads it, and passes it on to none, so capture scans all of
+  // that request, and leaves the reply, which is the proxy's own, unscanned. To
+  // a host other than a model API's, capture scans a request for the MCP and
+  // A2A interceptors alone, so with neither on, it does not read the body, nor
+  // report one larger than MAX_CAPTURE_BYTES.
   private route(requested: Target): Route | null {
     let target = requested;
     let proxied = false;
@@ -261,7 +277,7 @@ export class AILayerCapture {
     const upstream =
       target.port === this.proxyPort && target.atProxyHost ? proxyUpstream(this.proxyConfig?.upstreams, target.path) : undefined;
     if (upstream) {
-      if (PROXY_SCANNED_PROTOCOLS.has(upstream.protocol)) proxyScans = upstream.protocol;
+      if (PROXY_SCANNED_PROTOCOLS.has(upstream.protocol) && !this.proxyDeniesAll) proxyScans = upstream.protocol;
       target = fetchTarget(upstream.target) ?? target;
       proxied = true;
     }
@@ -270,7 +286,8 @@ export class AILayerCapture {
     // prompt interceptor whatever `aiLayer.prompt.hosts` says, and reads only
     // part of it, so capture scans the rest as a request to a model API host
     // whatever the upstream's `target`, as it does a request at a name below.
-    if (!model && this.prompt !== null && proxyScans === 'openai-api') model = true;
+    // In the proxy's deny-all state, capture scans all of it so.
+    if (!model && this.prompt !== null && upstream?.protocol === 'openai-api') model = true;
     // The system's resolver reads a name, such as localhost or 127.1, and need
     // not answer 127.0.0.1 for it first, so capture cannot tell whether a
     // request to the proxy's port at a name reaches the proxy or another
