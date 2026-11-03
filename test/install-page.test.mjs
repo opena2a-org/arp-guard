@@ -121,7 +121,7 @@ test('an item runs up to the next item or up to a paragraph after the list', () 
 
 test('only names listed right after "0.3.0 does not export" are read as not exported', () => {
   const said =
-    "The names 0.3.0 does not export include `writeOptOutMarker` and `clearOptOutMarker`, the engine's consent functions, so on 0.3.0 the telemetry opt-out is `npx aim-arp telemetry opt-out`, which writes the marker `writeOptOutMarker()` writes on `main`, and not a library call."
+    "The names 0.3.0 does not export include `writeOptOutMarker` and `clearOptOutMarker`, the engine's consent functions, so on 0.3.0 the telemetry opt-out is `npx @opena2a/aim-sdk telemetry opt-out`, which writes the marker `writeOptOutMarker()` writes on `main`, and not a library call."
   assert.ok(saysNotExported(said), 'the page sentence is not read as saying that 0.3.0 does not export the functions')
   // Without its negation, the sentence still ends "and not a library call".
   const exported = said.replace('The names 0.3.0 does not export include', 'The names 0.3.0 exports include')
