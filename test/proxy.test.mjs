@@ -19,7 +19,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { root, runAsDocumented } from './run-as-documented.mjs'
+import { lastingPastFirstPolls, root, runAsDocumented } from './run-as-documented.mjs'
 
 const require = createRequire(import.meta.url)
 const { AgentRuntimeProtection, ARPProxy } = require('../dist/index.js')
@@ -1417,7 +1417,9 @@ test('when the engine starts its proxy without listening through the server it a
   }
 })
 
-test('the proxy example on the runtime monitoring page prints what the page shows', async () => {
+// The bash block of the Proxy section of the runtime monitoring page, as
+// commands, and the lines of the text block after it.
+function proxyExample() {
   const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
   const start = lines.indexOf('## Proxy')
   assert.notEqual(start, -1, 'the page has no Proxy section')
@@ -1435,8 +1437,18 @@ test('the proxy example on the runtime monitoring page prints what the page show
   const index = blocks.findIndex((block) => block.lang === 'bash')
   assert.notEqual(index, -1, 'the Proxy section runs no example')
   assert.equal(blocks[index + 1]?.lang, 'text', 'the example has no output block after it')
+  return { commands: blocks[index].body.join('\n'), shown: blocks[index + 1].body }
+}
 
-  const printed = await runAsDocumented(blocks[index].body.join('\n'))
+test('the proxy example on the runtime monitoring page prints what the page shows', async () => {
+  const { commands, shown } = proxyExample()
+  assert.deepEqual(await runAsDocumented(commands), shown)
+})
 
-  assert.deepEqual(printed, blocks[index + 1].body)
+// With the process monitor on, a run that lasts past that monitor's first poll,
+// as one on a loaded machine can, also prints a `Child process terminated` line
+// and a `Cross-monitor correlation` line, which the page does not show.
+test('the proxy example on the runtime monitoring page prints what the page shows when the run lasts past the first poll of each monitor', async () => {
+  const { commands, shown } = proxyExample()
+  assert.deepEqual(await runAsDocumented(lastingPastFirstPolls(commands), { timeout: 60_000 }), shown)
 })
