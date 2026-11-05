@@ -125,3 +125,16 @@ export async function runAsDocumented(commands, { timeout = 30_000 } = {}) {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+// Longer than the default poll interval of the process monitor, 5000 ms, and of
+// the network monitor, 10000 ms.
+const PAST_FIRST_POLLS_MS = 10_500
+
+// `commands`, an example that calls `await arp.stop();` on a line of its own,
+// with a wait before that line, so that the run lasts past the first poll of
+// each monitor the example leaves on, as a run on a loaded machine can.
+export function lastingPastFirstPolls(commands) {
+  const stop = '  await arp.stop();'
+  if (!commands.includes(stop)) throw new Error('the example has no line that calls arp.stop()')
+  return commands.replace(stop, `  await new Promise((resolve) => setTimeout(resolve, ${PAST_FIRST_POLLS_MS}));\n${stop}`)
+}

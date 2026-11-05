@@ -28,7 +28,7 @@ import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib'
-import { root, runAsDocumented } from './run-as-documented.mjs'
+import { lastingPastFirstPolls, root, runAsDocumented } from './run-as-documented.mjs'
 
 const require = createRequire(import.meta.url)
 const { AgentRuntimeProtection, DEFAULT_MODEL_API_HOSTS, scanText } = require('../dist/index.js')
@@ -1583,7 +1583,9 @@ test('the default model API hosts are the ones the runtime monitoring page lists
   assert.deepEqual(listed[1].match(/`[^`]+`/g).map((host) => host.slice(1, -1)), [...DEFAULT_MODEL_API_HOSTS])
 })
 
-test('the capture example on the runtime monitoring page prints what the page shows', async () => {
+// The bash block of the AI-layer capture section of the runtime monitoring page,
+// as commands, and the lines of the text block after it.
+function captureExample() {
   const lines = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').split('\n')
   const start = lines.indexOf('## AI-layer capture')
   assert.notEqual(start, -1, 'the page has no AI-layer capture section')
@@ -1601,8 +1603,18 @@ test('the capture example on the runtime monitoring page prints what the page sh
   const index = blocks.findIndex((block) => block.lang === 'bash')
   assert.notEqual(index, -1, 'the AI-layer capture section runs no example')
   assert.equal(blocks[index + 1]?.lang, 'text', 'the example has no output block after it')
+  return { commands: blocks[index].body.join('\n'), shown: blocks[index + 1].body }
+}
 
-  const printed = await runAsDocumented(blocks[index].body.join('\n'))
+test('the capture example on the runtime monitoring page prints what the page shows', async () => {
+  const { commands, shown } = captureExample()
+  assert.deepEqual(await runAsDocumented(commands), shown)
+})
 
-  assert.deepEqual(printed, blocks[index + 1].body)
+// With the process monitor on, a run that lasts past that monitor's first poll,
+// as one on a loaded machine can, also prints a `Child process terminated` line
+// and a `Cross-monitor correlation` line, which the page does not show.
+test('the capture example on the runtime monitoring page prints what the page shows when the run lasts past the first poll of each monitor', async () => {
+  const { commands, shown } = captureExample()
+  assert.deepEqual(await runAsDocumented(lastingPastFirstPolls(commands), { timeout: 60_000 }), shown)
 })

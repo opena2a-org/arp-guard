@@ -16,7 +16,7 @@ From a request body in the chat completions, Messages, Gemini, Responses or Olla
 
 An event for a match in a reply carries `[masked: <n> characters]` in `data.matchedText`, in place of the text the pattern matched: for `OL-001` that is a credential, and for `OL-002` personal data. `<n>` counts the matched text the engine keeps, at most its first 200 characters, so a match of 368 characters is reported as `[masked: 200 characters]`. The event log, the `onEvent` handlers and L2 get the pattern, its severity and its description, and not the value.
 
-This example stands in for a model API with a server on `127.0.0.1` and names it as the one host. It turns the filesystem monitor off, which would also print the creation of the logs in the data directory:
+This example stands in for a model API with a server on `127.0.0.1` and names it as the one host. It turns the process, network and filesystem monitors off, so what it prints comes from capture alone:
 
 ```bash
 node -e "
@@ -29,7 +29,7 @@ const { AgentRuntimeProtection } = require('arp-guard');
   const arp = new AgentRuntimeProtection({
     agentName: 'my-agent',
     intelligence: { enabled: false },
-    monitors: { filesystem: { enabled: false } },
+    monitors: { process: { enabled: false }, network: { enabled: false }, filesystem: { enabled: false } },
     aiLayer: { prompt: { enabled: true, capture: true, hosts: [host] } },
   });
   arp.onEvent((e) => console.log(e.source, e.severity.padEnd(8), e.description));
@@ -49,6 +49,13 @@ const { AgentRuntimeProtection } = require('arp-guard');
 prompt critical [PI-001] Instruction override attempt — direct override of system instructions
 prompt high     [DE-001] System prompt extraction — attempting to extract system instructions
 ```
+
+With those monitors on, what the example prints depends on how long it runs, and a run on a loaded machine can last past a monitor's first poll:
+
+- The filesystem monitor reports the creation of the logs in the data directory.
+- The process monitor polls every `monitors.process.intervalMs` milliseconds, 5000 by default, and each poll reports the `ps` it ran at `start()` or on the poll before as a `Child process terminated` line.
+- The network monitor polls every `monitors.network.intervalMs` milliseconds, 10000 by default, lists the established connections of other processes too, and reports each destination it has not listed before as a `New outbound connection` line.
+- Once events from two sources fall within 60 seconds, the engine adds a `Cross-monitor correlation` line.
 
 Capture observes: the request and the response reach the server and the agent as they were sent. `fetch` is called at once with the agent's arguments, as with no hook, and capture reads the body of a `Request` from a copy as it is sent. A `fetch` built on `http` and `https`, such as node-fetch set as the global `fetch`, is captured once, as a `fetch`. Capture does not scan a body larger than 1 MiB (1048576 bytes), a body passed to `fetch` in its options as a stream, `Blob` or `FormData`, or a response the agent takes no listener for, or stops reading before its end, through `http`. When the agent cancels the body of a `fetch` reply before all of it has arrived, as a `break` out of a `for await` loop over the body at `data: [DONE]` does while the end of the body is still on its way, capture cancels its copy of the body as well, so that the agent's cancel completes, and the connection closes, as with no hook, and scans what its copy holds then, which includes every byte the agent read: the server-sent events and JSON lines that arrived whole, or a JSON body whose text arrived whole. The rest of the reply does not arrive, so a JSON body the cancel cuts short is not scanned. When the body of a `fetch` reply fails before all of it has arrived, as when the agent aborts the `fetch` with the signal it passed to it, the failure reaches capture's copy as well, and capture scans what the copy held then, as it does for a cancel. The requests L2 sends to its model are ARP's own, and capture does not scan them either. Nor does it see a call made through a reference to `fetch`, `request`, `get` or `spawn` taken before `start()`, such as the one an SDK client made before `start()` may hold, or through an ES module named or namespace import of `request`, `get` or `spawn` (`import { request } from 'node:https'`). An ES module default import (`import https from 'node:https'`) is the CommonJS module object, so a call on it is seen.
 
@@ -90,7 +97,7 @@ When the capability manifest at `proxy.manifestPath` fails to load or verify, as
 
 The proxy scans on the agent's thread, as capture does.
 
-This example stands in for a model API with a server on `127.0.0.1` and sends the agent's request to it through the proxy:
+This example stands in for a model API with a server on `127.0.0.1` and sends the agent's request to it through the proxy. It turns the process, network and filesystem monitors off, as the example in [AI-layer capture](#ai-layer-capture) does:
 
 ```bash
 node -e "
@@ -102,7 +109,7 @@ const { AgentRuntimeProtection } = require('arp-guard');
   const arp = new AgentRuntimeProtection({
     agentName: 'my-agent',
     intelligence: { enabled: false },
-    monitors: { filesystem: { enabled: false } },
+    monitors: { process: { enabled: false }, network: { enabled: false }, filesystem: { enabled: false } },
     aiLayer: { prompt: { enabled: true } },
     proxy: {
       port: 0,
