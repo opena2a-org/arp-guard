@@ -17,6 +17,10 @@
 // They said the value must be the boolean `false` and that an interceptor
 // scans nothing before start(), but not how to tell either from the outside.
 //
+// It also guards what the AI-layer capture section says a poll of the process
+// monitor prints. The section named the `ps` alone, while in the node:20
+// container image, where /bin/sh is dash, a poll also reports the shell.
+//
 // Each account is measured against the BUILT package by a probe that runs in
 // its own process, the way the README's commands run. A probe sets HOME to a
 // directory inside its scratch directory, so what the twin writes there is
@@ -68,10 +72,10 @@ const homeLogs = path.join(os.homedir(), ".opena2a", "arp");
 // Runs `script` with node in a scratch directory, the way runAsDocumented runs
 // the README's commands, with HOME set to a directory inside it. `before` runs
 // first, in the same directory. The script is passed to node in single quotes,
-// so it must hold none.
-function probe(script, before = '') {
+// so it must hold none. `options` goes to runAsDocumented.
+function probe(script, before = '', options) {
   assert.doesNotMatch(script, /'/, 'the probe script holds a single quote, which would end the quoted script')
-  return runAsDocumented(`${before}\nmkdir home && HOME="$PWD/home" node -e '${PRELUDE}${script}'`)
+  return runAsDocumented(`${before}\nmkdir home && HOME="$PWD/home" node -e '${PRELUDE}${script}'`, options)
 }
 
 // One event for each row, on an engine with the default rules, and the actions
@@ -789,4 +793,49 @@ test('the README, docs/install.md and the Files ARP writes section say how to ch
     assertSays(sectionText(markdown, 'What `npm install` delivers today'), `the What npm install delivers today section of ${where}`, [`To check that it was read as off, ${check}`])
   }
   assertSays(sectionText(page, 'Files ARP writes'), 'the Files ARP writes section', [`To check that either took effect, ${check}`])
+})
+
+// What is under this process, by name, while execSync runs a `ps`, in the order
+// a walk down from this process finds it. Then what the first poll of the
+// process monitor prints, with the network and filesystem monitors off. A poll
+// emits its events together, and its first line stops the monitor, so a run that
+// stalls past a poll interval still prints the lines of one poll. The monitor's
+// timer does not keep a process alive, so `alive` does, until the monitor has
+// stopped.
+const POLL_PROBE = String.raw`
+const rows = require("child_process").execSync("ps -ax -o pid=,ppid=,comm=", { encoding: "utf8" }).trim().split("\n").map((line) => line.trim().split(/\s+/));
+const parents = [process.pid];
+const under = [];
+for (const parent of parents) {
+  for (const [pid, ppid, ...command] of rows) {
+    if (Number(ppid) !== parent) continue;
+    parents.push(Number(pid));
+    under.push(path.basename(command.join(" ")));
+  }
+}
+console.log(JSON.stringify(under));
+(async () => {
+  const arp = new AgentRuntimeProtection({ agentName: "poll-probe", intelligence: { enabled: false }, monitors: { network: { enabled: false }, filesystem: { enabled: false } } });
+  const alive = setInterval(() => {}, 1000);
+  let stopping;
+  arp.onEvent((e) => {
+    console.log(e.source, e.severity.padEnd(8), e.description);
+    stopping ??= arp.stop().then(() => clearInterval(alive));
+  });
+  await arp.start();
+})();
+`
+
+test('the AI-layer capture section says what a poll of the process monitor prints, the `ps` and, where it stays while `ps` runs, the shell', async () => {
+  const [listed, ...printed] = await probe(POLL_PROBE, '', { timeout: 60_000 })
+  assert.ok(['["ps"]', '["sh","ps"]'].includes(listed), `the section gives no case for what is under the agent while \`ps\` runs: ${listed}`)
+  assert.equal(printed.length, JSON.parse(listed).length, `under the agent while \`ps\` ran: ${listed}; one poll printed:\n${printed.join('\n')}`)
+  for (const line of printed) assert.match(line, /^process info {5}Child process terminated: PID \d+$/)
+
+  assertSays(sectionText(page, 'AI-layer capture'), 'the AI-layer capture section', [
+    'each poll reports the `ps` it ran at `start()` or on the poll before as a `Child process terminated` line.',
+    'The monitor runs `ps` with `execSync`, which starts it through `/bin/sh`.',
+    'On Linux in the `node:20` container image, where `/bin/sh` is dash, the shell stays as the parent of `ps` while it runs, so each poll also reports that shell, as a second such line.',
+    'On macOS the shell replaces itself with `ps`, so each poll prints one line.',
+  ])
 })
