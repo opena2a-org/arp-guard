@@ -53,7 +53,7 @@ prompt high     [DE-001] System prompt extraction — attempting to extract syst
 With those monitors on, what the example prints depends on how long it runs, and a run on a loaded machine can last past a monitor's first poll:
 
 - The filesystem monitor reports the creation of the logs in the data directory.
-- The process monitor polls every `monitors.process.intervalMs` milliseconds, 5000 by default, and each poll reports the `ps` it ran at `start()` or on the poll before as a `Child process terminated` line.
+- The process monitor polls every `monitors.process.intervalMs` milliseconds, 5000 by default, and each poll reports the `ps` it ran at `start()` or on the poll before as a `Child process terminated` line. The monitor runs `ps` with `execSync`, which starts it through `/bin/sh`. On Linux in the `node:20` container image, where `/bin/sh` is dash, the shell stays as the parent of `ps` while it runs, so each poll also reports that shell, as a second such line. On macOS the shell replaces itself with `ps`, so each poll prints one line.
 - The network monitor polls every `monitors.network.intervalMs` milliseconds, 10000 by default, lists the established connections of other processes too, and reports each destination it has not listed before as a `New outbound connection` line.
 - Once events from two sources fall within 60 seconds, the engine adds a `Cross-monitor correlation` line.
 

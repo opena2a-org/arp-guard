@@ -1446,7 +1446,7 @@ test('the proxy example on the runtime monitoring page prints what the page show
 })
 
 // With the process monitor on, a run that lasts past that monitor's first poll,
-// as one on a loaded machine can, also prints a `Child process terminated` line
+// as one on a loaded machine can, also prints `Child process terminated` lines
 // and a `Cross-monitor correlation` line, which the page does not show.
 test('the proxy example on the runtime monitoring page prints what the page shows when the run lasts past the first poll of each monitor', async () => {
   const { commands, shown } = proxyExample()
