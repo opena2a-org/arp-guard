@@ -27,6 +27,7 @@ jobs:
           # `refs/remotes/origin/$BASE_REF...HEAD`, which needs the base branch
           # present.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Gather review context
         env:
@@ -106,6 +107,7 @@ jobs:
             case "$file" in
               *.test.* | *.spec.* | package-lock.json | *.lock) continue ;;
             esac
+            [ -L "$file" ] && continue
             [ -f "$file" ] || continue
             FILE_SIZE=$(wc -c < "$file" | tr -d ' ')
             NEW_TOTAL=$((TOTAL_SIZE + FILE_SIZE))
@@ -187,7 +189,7 @@ jobs:
           # substitutes it here, and then requires the reply's FIRST line to match
           # `VERDICT-<nonce>:` exactly. The marker therefore does not exist until
           # the review runs, so it cannot be pre-placed in an attacker-authored
-          # diff or smuggled in through a quoted previous review. A prompt that
+          # diff. A prompt that
           # lost the placeholder is INCONCLUSIVE rather than silently unverified.
 
           {
