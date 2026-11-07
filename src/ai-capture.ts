@@ -95,6 +95,10 @@ const A2A_METHODS = new Set(['message/send', 'message/stream', 'tasks/send', 'ta
 // to an upstream of any other protocol, such as `passthrough`, on unscanned.
 const PROXY_SCANNED_PROTOCOLS = new Set(['openai-api', 'mcp-http', 'a2a']);
 
+// PROXY_SCANNED_PROTOCOLS as a frozen list, for the test that pins the
+// protocols the Proxy section of docs/runtime-monitoring.md names to it.
+export const PROXY_SCANNED_PROTOCOL_LIST: readonly string[] = Object.freeze(Array.from(PROXY_SCANNED_PROTOCOLS));
+
 // Set while ARP does its own work, and in the callbacks that work schedules:
 // a request made then is ARP's, not the agent's, and is not captured.
 const arpOwnWork = new AsyncLocalStorage<true>();
@@ -945,6 +949,10 @@ function urlHost(url: URL): string {
 // listener on 127.0.0.1: that address, and 0.0.0.0, a request to which
 // reaches it on macOS and Linux, each also as an IPv4-mapped IPv6 address.
 const PROXY_HOST_ADDRESSES = new Set(['127.0.0.1', '0.0.0.0', '[::ffff:7f00:1]', '[::ffff:0:0]']);
+
+// PROXY_HOST_ADDRESSES as a frozen list, for the test that pins the
+// addresses the Proxy section of docs/runtime-monitoring.md names to it.
+export const PROXY_HOST_ADDRESS_LIST: readonly string[] = Object.freeze(Array.from(PROXY_HOST_ADDRESSES));
 
 // True for an address `net.isIP` accepts, which Node connects to as written,
 // in PROXY_HOST_ADDRESSES. Node passes a host `net.isIP` refuses to the
