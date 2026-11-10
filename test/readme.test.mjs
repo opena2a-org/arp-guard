@@ -288,6 +288,46 @@ test('the Benchmark network caveat names the polling network monitor, not networ
   assert.match(benchmark, /network interceptor is exercised/, 'the caveat does not say the interceptor path is tested')
 })
 
+// docs/benchmark.md records a run in which `E2E-003`, the live test of the
+// polling network monitor, ran and passed: the date, the OASB commit or
+// release, the engine, the counts, and a checkout line that names the same
+// commit or release. The engine is the one package.json pins, as for the 0.4.0
+// run, so a change of the pin with no new run fails here. With that run on the
+// page, the network caveat cannot still say the monitor has no running test.
+test('the Benchmark section records a run in which E2E-003 passed, against the engine package.json pins, with the checkout line that repeats it', () => {
+  const benchmark = sectionText(benchmarkPage, '## Benchmark')
+  const record =
+    /On (\d{4}-\d{2}-\d{2}), OASB (?:at commit `([0-9a-f]{12,40})`|(\d+\.\d+\.\d+)) ran against the same engine, `@opena2a\/aim-sdk` (\d+\.\d+\.\d+),.*? Of its (\d+) scenarios, (\d+) passed, (\d+) failed and (\d+) (?:was|were) skipped, and `E2E-003` passed\./.exec(
+      benchmark,
+    )
+  assert.ok(record, 'the section records no run with its date, OASB commit or release, engine version, counts and the result of E2E-003')
+  const [date, commit, release, engine] = record.slice(1, 5)
+  const [total, passed, failed, skipped] = record.slice(5).map(Number)
+  const day = new Date(`${date}T00:00:00Z`)
+  assert.ok(!Number.isNaN(day.getTime()) && day.toISOString().startsWith(date), `${date} is not a calendar date`)
+  assert.equal(failed, 0, 'the run recorded for E2E-003 had failures')
+  assert.equal(passed + skipped, total, 'the passed and skipped counts do not add up to the scenarios run')
+  const pinned = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@opena2a/aim-sdk']
+  assert.equal(
+    engine,
+    pinned,
+    `the run is recorded against @opena2a/aim-sdk ${engine}, but package.json pins ${pinned}: run OASB against the pinned engine and record that run`,
+  )
+  // The checkout line is in the first code block after the record; the prose
+  // before that block can name the 0.4.0 checkout it replaces.
+  const block = /```\S* (.*?) ```/.exec(benchmark.slice(record.index + record[0].length))
+  assert.ok(block, 'the run record is followed by no code block')
+  const checkout = /(?:^| )git checkout (\S+)/.exec(block[1])
+  assert.ok(checkout, 'the code block after the run record has no checkout line')
+  if (commit) {
+    assert.match(checkout[1], /^[0-9a-f]{40}$/, `the checkout line names ${checkout[1]}, not a full commit`)
+    assert.ok(checkout[1].startsWith(commit), `the checkout line names ${checkout[1]}, not the commit ${commit} the run used`)
+  } else {
+    assert.equal(checkout[1], `v${release}`, `the checkout line names ${checkout[1]}, not OASB ${release}`)
+  }
+  assert.doesNotMatch(benchmark, /has no running test/, 'the network caveat still says the polling network monitor has no running test')
+})
+
 test('a section ends at the next heading outside a code block', () => {
   const lines = ['## Benchmark', 'one', '```bash', '## comment', '```', 'two', '## License', 'three']
   assert.equal(sectionText(lines, '## Benchmark'), 'one ```bash ## comment ``` two')
