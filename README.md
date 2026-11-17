@@ -1,19 +1,6 @@
 # Agent Runtime Protection (ARP)
 
-[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](STATUS.md)
-[![CI](https://github.com/opena2a-org/arp-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/opena2a-org/arp-guard/actions/workflows/ci.yml)
-[![Security](https://github.com/opena2a-org/arp-guard/actions/workflows/security.yml/badge.svg)](https://github.com/opena2a-org/arp-guard/actions/workflows/security.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
-
-[Website](https://opena2a.org) · [Discord](https://discord.gg/uRZa3KXgEn)
-
 EDR for AI agents. Monitors agent processes, network and filesystem, and scans the AI-layer traffic the agent passes to it (prompts, MCP tool calls, A2A messages), then detects and enforces, across three layers: rule-based, statistical, and LLM-assisted.
-
-## Quick Start
-
-Scan a prompt against the built-in AI-layer patterns. `scanText` is regex matching in-process: it makes no network call and starts no monitor.
 
 ```bash
 npm install arp-guard
@@ -28,6 +15,19 @@ for (const m of matches) console.log(m.pattern.id, m.pattern.severity.padEnd(8),
 PI-001 critical "Ignore all previous instructions"
 DE-001 high     "reveal your system prompt"
 ```
+
+[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](STATUS.md)
+[![CI](https://github.com/opena2a-org/arp-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/opena2a-org/arp-guard/actions/workflows/ci.yml)
+[![Security](https://github.com/opena2a-org/arp-guard/actions/workflows/security.yml/badge.svg)](https://github.com/opena2a-org/arp-guard/actions/workflows/security.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+
+[Website](https://opena2a.org) · [Discord](https://discord.gg/uRZa3KXgEn)
+
+## Quick Start
+
+Scan a prompt against the built-in AI-layer patterns. `scanText` is regex matching in-process: it makes no network call and starts no monitor.
 
 `main` prints these two lines, and a test runs the block against the build to keep them in step.
 

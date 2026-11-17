@@ -64,10 +64,11 @@ function documentedSetName() {
   return match[1]
 }
 
-// The string the Quick Start scans, and the name of the set it passes.
+// The string the Quick Start scans, and the name of the set it passes. Its
+// start block stands in the README header, above the first `## ` heading.
 function quickStartCall() {
-  const match = /scanText\('([^']+)', ([\w$.]+)\)/.exec(section(readme, '## Quick Start'))
-  assert.ok(match, "the Quick Start has no `scanText('<text>', <set>)` call")
+  const match = /scanText\('([^']+)', ([\w$.]+)\)/.exec(readme.slice(0, readme.search(/^## /m)))
+  assert.ok(match, "the start block above the first `## ` has no `scanText('<text>', <set>)` call")
   return { sample: match[1], setName: match[2] }
 }
 
