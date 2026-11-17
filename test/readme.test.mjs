@@ -1005,6 +1005,39 @@ test('the documented output is what the documented commands print', async () => 
   assert.deepEqual(printed, output.body)
 })
 
+// The anchor GitHub gives a `## ` heading: its text in lower case, without the
+// punctuation other than hyphens and underscores, with each space a hyphen.
+function anchor(heading) {
+  return heading
+    .slice(3)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-')
+}
+
+test('a section anchor is its heading as GitHub writes it', () => {
+  assert.equal(anchor('## AI-Layer Scanning'), 'ai-layer-scanning')
+  assert.equal(anchor('## What `npm install` delivers today'), 'what-npm-install-delivers-today')
+})
+
+// The Quick Start once printed its two matches and nothing after them, so the
+// first screen left a reader who had just seen the scan with no next step. Its
+// output ends with a `Next: ` line, which the documented output test runs, and
+// the line links a section of this README at the homepage package.json gives,
+// so renaming that section fails here.
+test('the Quick Start output ends with a Next line that links a section of the README', () => {
+  const { output } = quickStart(readme)
+  const last = output.body.at(-1)
+  assert.match(last, /^Next: \S/, `the Quick Start output ends with ${JSON.stringify(last)}, not a \`Next: \` line`)
+
+  const links = last.match(/https:\/\/\S+/g) ?? []
+  assert.equal(links.length, 1, `the Next line holds ${links.length} links, not one`)
+  const link = new URL(links[0])
+  const home = new URL(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).homepage)
+  assert.equal(`${link.origin}${link.pathname}`, `${home.origin}${home.pathname}`, 'the Next line links a page other than the README')
+  assert.ok(sections(readme).map(anchor).includes(link.hash.slice(1)), `the Next line links ${link.hash}, and the README has no section with that anchor`)
+})
+
 // The AI-layer interceptors, by the type `getStatus()` gives them, and how the
 // README names what each one scans.
 const AI_LAYER = { prompt: /\bprompts?\b/i, 'mcp-protocol': /\bMCP\b/, 'a2a-protocol': /\bA2A\b/ }
