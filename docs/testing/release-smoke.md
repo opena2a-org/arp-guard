@@ -112,26 +112,30 @@ or a version, the shim's dependency or one of the six URLs differs from the abov
 
 ## 2. The README's first command (1 min)
 
-The README's [Quick Start](../../README.md#quick-start) installs `arp-guard` and runs one
-`node -e` block. `npm install arp-guard` installs the release on npm, so §1's install
-stands in for that line. This script reads the README the package ships, runs the rest of
-the block as the README writes it, and compares what it prints with the output block the
-README shows after it:
+The first code block of the [README](../../README.md) installs `arp-guard` and runs one
+`node -e` script, and the block after it shows what the script prints.
+`npm install arp-guard` installs the release on npm, so §1's install stands in for that
+line. This script reads the README the package ships, finds the bash block that holds
+that line, runs the rest of the block as the README writes it, and compares what it
+prints with the output block the README shows after it:
 
 ```bash
 cat > readme-first.js <<'EOF'
 const { execSync } = require('child_process');
 const fs = require('fs');
 
+const INSTALL = 'npm install arp-guard';
 const readme = fs.readFileSync(require.resolve('agent-runtime-protection/README.md'), 'utf8');
-const quickStart = readme.slice(readme.indexOf('\n## Quick Start\n'));
-const [, block] = /```bash\n([\s\S]*?)\n```/.exec(quickStart);
-const [, shown] = /```text\n([\s\S]*?)\n```/.exec(quickStart.slice(quickStart.indexOf(block)));
-const [install, ...command] = block.split('\n');
-console.error(`(in place of: ${install})`);
+// The start block is the bash block that holds the install line, found by that
+// line and not by a heading. Its output is the next code block, a text block.
+const start = [...readme.matchAll(/```bash\n([\s\S]*?)\n```/g)].find(([, block]) => block.split('\n').includes(INSTALL));
+const output = start && /```(\w*)\n([\s\S]*?)\n```/.exec(readme.slice(start.index + start[0].length));
+if (output?.[1] !== 'text') throw new Error(`no bash block of the README holds "${INSTALL}" with a text block as the next code block`);
+const command = start[1].split('\n').filter((line) => line !== INSTALL);
+console.error(`(in place of: ${INSTALL})`);
 const printed = execSync(command.join('\n'), { encoding: 'utf8' }).trimEnd();
 console.log(printed);
-console.log(printed === shown ? 'prints what the README shows' : 'does NOT print what the README shows');
+console.log(printed === output[2] ? 'prints what the README shows' : 'does NOT print what the README shows');
 EOF
 node readme-first.js
 ```
