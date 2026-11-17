@@ -139,6 +139,7 @@ node readme-first.js
 ```text
 PI-001 critical "Ignore all previous instructions"
 DE-001 high     "reveal your system prompt"
+Next: scan the input your agent receives: https://github.com/opena2a-org/arp-guard#ai-layer-scanning
 prints what the README shows
 ```
 
