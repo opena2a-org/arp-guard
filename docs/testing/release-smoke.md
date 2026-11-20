@@ -411,21 +411,22 @@ EOF
 node cell-215.js
 ```
 
-**EXPECTED:** capture leaves a request unscanned only at an address ARP's proxy is bound to:
-the bare name is scanned by capture like any other name, and a duplicate event for a request
-that does reach the proxy is the safe direction. The request to `localhost` that reaches no
-listener is scanned by capture; the one that reaches the proxy is scanned by capture and by
-the proxy; the one to `127.0.0.1` is left to the proxy:
+**EXPECTED:** capture leaves a request unscanned only at an address ARP's proxy is bound to.
+It takes that address from the connection a request at a name is sent on, not from the name
+([Proxy](../runtime-monitoring.md#proxy)). The request to `localhost` that reaches no
+listener is scanned by capture; the one that reaches the proxy is left to the proxy, as the
+one to `127.0.0.1` is:
 
 ```text
 localhost, answered ::1: ECONNREFUSED mcp-protocol MCP-001
-localhost, answered 127.0.0.1: 200 mcp-protocol MCP-001, mcp-protocol MCP-001
+localhost, answered 127.0.0.1: 200 mcp-protocol MCP-001
 127.0.0.1: 200 mcp-protocol MCP-001
 MCP server received: 2
 ```
 
-Before the fix, the first line read `localhost, answered ::1: ECONNREFUSED no event`, and the
-second gave one event, the proxy's.
+Before the fix, the first line read `localhost, answered ::1: ECONNREFUSED no event`. From
+that fix until capture read the address of the connection (§5.7), the second line gave two
+events, capture's and the proxy's.
 
 ### 5.3 A `fetch` reply the agent cancels, with prompt capture on ([#216](https://github.com/opena2a-org/arp-guard/issues/216))
 
@@ -601,20 +602,20 @@ node cell-226.js
 
 **EXPECTED:** the proxy scans a request it passes to an `openai-api` upstream for the prompt
 interceptor whatever `aiLayer.prompt.hosts` says, so capture scans a request at a name on
-that route for the prompt interceptor as well, as it cannot tell whether the request
-reaches the proxy. The request to `localhost` that reaches no listener is scanned by
-capture; the one that reaches the proxy is scanned by capture and by the proxy; the one to
-`127.0.0.1` is left to the proxy:
+that route that does not reach the proxy for the prompt interceptor as well. The request to
+`localhost` that reaches no listener is scanned by capture; the one that reaches the proxy
+is left to the proxy, as the one to `127.0.0.1` is:
 
 ```text
 localhost, answered ::1: ECONNREFUSED prompt input DE-001, prompt input PI-001
-localhost, answered 127.0.0.1: 200 prompt input DE-001, prompt input DE-001, prompt input PI-001, prompt input PI-001
+localhost, answered 127.0.0.1: 200 prompt input DE-001, prompt input PI-001
 127.0.0.1: 200 prompt input DE-001, prompt input PI-001
 model received: 2
 ```
 
-Before the fix, the first line read `localhost, answered ::1: ECONNREFUSED no event`, and the
-second gave one event of each, the proxy's.
+Before the fix, the first line read `localhost, answered ::1: ECONNREFUSED no event`. From
+that fix until capture read the address of the connection (§5.7), the second line gave two
+events of each, capture's and the proxy's.
 
 ### 5.6 A `tool` message sent to the proxy at `127.0.0.1`, on an `openai-api` route to a host not in `aiLayer.prompt.hosts` ([#232](https://github.com/opena2a-org/arp-guard/issues/232))
 
@@ -672,6 +673,69 @@ model received: 2
 
 Before the fix, the first line read `127.0.0.1: 200 no event`.
 
+### 5.7 A request to the proxy under another spelling of its address ([#199](https://github.com/opena2a-org/arp-guard/issues/199))
+
+**VERIFY:** with `aiLayer.mcp { enabled: true, capture: true }` and an `mcp-http` upstream,
+send a `tools/call` whose `path` argument is `../../etc/hosts` to the proxy's port at
+`0.0.0.0`, and compare the events with the same request sent to `127.0.0.1`.
+
+The script also sends it at `127.1`, given as the `hostname` option of `http.request`, to
+`localhost` through a `lookup` that answers `127.0.0.1`, and to `localhost` with the `fetch`
+of Node.js, which resolves the name with this machine's resolver. §5.2 prints how that
+resolver answers `localhost`; on the machine this cell was measured on, it answers `::1`,
+then `127.0.0.1`, and the request sent with `fetch` reaches the proxy.
+
+```bash
+cat > cell-199.js <<'EOF'
+const { toolCall, serve, protect, post, eventsOf } = require('./walk');
+
+// A lookup that answers `address` for every name, as a resolver that answers it first does.
+const answering = (address, family) => (hostname, options, callback) =>
+  options.all ? callback(null, [{ address, family }]) : callback(null, address, family);
+
+(async () => {
+  const mcp = await serve('{"jsonrpc":"2.0","id":1,"result":{"content":[]}}');
+  const { arp, events } = protect({ mcp: { enabled: true, capture: true } }, [
+    { pathPrefix: '/mcp', target: 'http://' + mcp.host, protocol: 'mcp-http' },
+  ]);
+  await arp.start();
+  const port = arp.getProxy().getPort();
+  const call = toolCall('read_file', { path: '../../etc/hosts' });
+  const at = (hostname, lookup) => eventsOf(events, () => post({ hostname, port, path: '/mcp', body: call, lookup }));
+  // The `fetch` of Node.js, which resolves the name with this machine's resolver.
+  const fetched = () => fetch(`http://localhost:${port}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: call })
+    .then((res) => res.text().then(() => res.status), (error) => error.cause?.code ?? error.message);
+  console.log('0.0.0.0:', await at('0.0.0.0'));
+  console.log('127.1:', await at('127.1'));
+  console.log('localhost, answered 127.0.0.1:', await at('localhost', answering('127.0.0.1', 4)));
+  console.log('localhost, with fetch:', await eventsOf(events, fetched));
+  console.log('127.0.0.1:', await at('127.0.0.1'));
+  console.log('MCP server received:', mcp.received);
+  await arp.stop();
+  mcp.close();
+})();
+EOF
+node cell-199.js
+```
+
+**EXPECTED:** one event per request, whatever loopback spelling the agent uses for the
+proxy's address. Each request reaches the proxy, which scans it, and capture leaves it to
+the proxy:
+
+```text
+0.0.0.0: 200 mcp-protocol MCP-001
+127.1: 200 mcp-protocol MCP-001
+localhost, answered 127.0.0.1: 200 mcp-protocol MCP-001
+localhost, with fetch: 200 mcp-protocol MCP-001
+127.0.0.1: 200 mcp-protocol MCP-001
+MCP server received: 5
+```
+
+Before the fix of the `0.0.0.0` case, the first line read
+`0.0.0.0: 200 mcp-protocol MCP-001, mcp-protocol MCP-001`. Before the fix of the names,
+which has capture read the address of the connection a request at a name is sent on, the
+`127.1` line and the two `localhost` lines each gave that second event as well.
+
 Fail the release if a cell prints anything other than its EXPECTED block.
 
 ---
@@ -696,6 +760,10 @@ The data directory of each script, `.opena2a/arp`, is under `$WALK`, and goes wi
 - If the diff changes how capture reads a `fetch` body: run §5.3 under the oldest Node
   version `engines` names as well as the current one. The body stream is the one the Node
   release's own `fetch` gives.
+- If the diff changes how capture reads the connection a request at a name is sent on: run
+  §5.7 under the oldest Node version `engines` names as well as the current one. For the
+  `fetch` of Node.js, capture reads the connection from the diagnostics channels of the
+  undici that Node release ships.
 - If the release fixes another issue on the capture or proxy path: add its VERIFY line here
   as a cell in §5, with its EXPECTED output and what the cell printed before the fix.
 - If a regression ships that an item NOT on this list would have caught: add the item here
