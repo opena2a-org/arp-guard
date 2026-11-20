@@ -30,6 +30,7 @@ import http = require('http');
 import https = require('https');
 import net = require('net');
 import childProcess = require('child_process');
+import diagnosticsChannel = require('diagnostics_channel');
 import zlib = require('zlib');
 import { AsyncLocalStorage } from 'async_hooks';
 import { finished } from 'stream';
@@ -124,8 +125,9 @@ const isArpOwnWork = (): boolean => arpOwnWork.getStore() === true;
 // Set while a fetch call capture has taken runs, and in the callbacks it
 // schedules: a fetch built on `http` and `https`, such as node-fetch, sends
 // its request through their hooked functions, and the fetch hook already has
-// that request and its reply.
-const capturedFetch = new AsyncLocalStorage<true>();
+// that request and its reply. For a fetch whose route waits for its
+// connection, it holds that pending route.
+const capturedFetch = new AsyncLocalStorage<PendingRoute | true>();
 
 /**
  * The engine, for the prompt interceptor capture makes: the text an output
@@ -154,7 +156,8 @@ type Patch = { owner: Record<string, unknown>; key: string; original: AnyFunctio
 // `atProxyHost`: a request to the host reaches a listener on 127.0.0.1, the
 // address ARP's proxy listens on. `named`: the host is a name, such as
 // localhost or 127.1, which Node passes to the system's resolver, so a request
-// to it can reach that listener or another one at the same port.
+// to it can reach that listener or another one at the same port: which one,
+// the connection the request is sent on tells.
 type Target = { hostname: string; port: string; origin: string; path: string; atProxyHost: boolean; named: boolean };
 // The target capture scans a request as sent to, whether it scans the request
 // as one to a model API host, and whether it leaves the reply to ARP's proxy,
@@ -193,6 +196,11 @@ export class AILayerCapture {
   private readonly a2a: A2AProtocolInterceptor | null;
   private readonly hosts: HostRule[];
   private patches: Patch[] = [];
+  // The diagnostics channels capture listens on, each with its listener.
+  private subscriptions: Array<{ channel: string; onMessage: (message: unknown) => void }> = [];
+  // The requests undici created for a fetch whose route waits for its
+  // connection, each with that pending route.
+  private readonly undiciRequests = new WeakMap<object, PendingRoute>();
   private active = false;
   // The port of ARP's proxy on the loopback address, and the config whose
   // `upstreams` route the requests the agent sends to it.
@@ -240,11 +248,16 @@ export class AILayerCapture {
    * Capture scans a request routed to no upstream as sent to the proxy's host.
    *
    * A request to `port` at a name, which `reachesProxyHost` does not accept,
-   * reaches the proxy when the system's resolver gives 127.0.0.1 for the name
-   * first, which capture cannot tell, so capture leaves neither the request
-   * nor its reply to the proxy. It scans the request as sent to that name, and
-   * as a request to a model API host as well when `proxy.upstreams` routes its
-   * path to an `openai-api` upstream, or to an upstream whose `target` is one.
+   * reaches the proxy when the connection it is sent on is to an address
+   * `reachesProxyHost` accepts, which the name does not tell. Capture holds
+   * its scan of a plain HTTP request to `port` at a name until it has read the
+   * address of that connection, and scans one sent on a connection to such an
+   * address at `port` by the route of a request to `port` at 127.0.0.1. A
+   * request sent on another connection, or on one capture does not see, it
+   * does not leave to the proxy, nor its reply: it scans that request as sent
+   * to the name, and as a request to a model API host as well when
+   * `proxy.upstreams` routes its path to an `openai-api` upstream, or to an
+   * upstream whose `target` is one.
    *
    * `deniesAll` is true when the proxy is in its deny-all state, in which it
    * answers every request with 403 before it routes or reads it, so capture
@@ -293,14 +306,16 @@ export class AILayerCapture {
     // In the proxy's deny-all state, capture scans all of it so.
     if (!model && this.prompt !== null && upstream?.protocol === 'openai-api') model = true;
     // The system's resolver reads a name, such as localhost or 127.1, and need
-    // not answer 127.0.0.1 for it first, so capture cannot tell whether a
-    // request to the proxy's port at a name reaches the proxy or another
-    // listener at that port, such as one on ::1. Capture leaves neither the
-    // request nor its reply to the proxy, and scans the request as one to a
-    // model API host as well when the proxy would pass it on to an
-    // `openai-api` upstream, whose requests the proxy scans for the prompt
-    // interceptor whatever `aiLayer.prompt.hosts` says, or to an upstream of
-    // another protocol whose `target` is one.
+    // not answer 127.0.0.1 for it first, so the name does not tell whether a
+    // request to the proxy's port at it reaches the proxy or another listener
+    // at that port, such as one on ::1. This is the route of one that is not
+    // sent on a connection to the proxy, or whose connection capture does not
+    // see; `pendingRoute` gives the other. Capture leaves neither the request
+    // nor its reply to the proxy, and scans the request as one to a model API
+    // host as well when the proxy would pass it on to an `openai-api`
+    // upstream, whose requests the proxy scans for the prompt interceptor
+    // whatever `aiLayer.prompt.hosts` says, or to an upstream of another
+    // protocol whose `target` is one.
     if (!model && this.prompt !== null && target.named && target.port === this.proxyPort) {
       const upstream = proxyUpstream(this.proxyConfig?.upstreams, target.path);
       const passedOnTo = upstream ? fetchTarget(upstream.target) : null;
@@ -308,6 +323,30 @@ export class AILayerCapture {
     }
     if (!model && !this.mcp && !this.a2a) return null;
     return { target, model, proxied, proxyScans };
+  }
+
+  // The route of a request `route` gave `elsewhere` for, when it waits for the
+  // request's connection: a plain HTTP request to the proxy's port at a name.
+  // ARP's proxy is an HTTP server, so capture takes no request sent with TLS
+  // for one to it. For a request sent on a connection to the proxy, the route
+  // is the one `route` gives a request to the proxy's port at an address
+  // `reachesProxyHost` accepts, which keeps the origin the request was sent to
+  // when the proxy routes its path to no upstream. `elsewhere` scans the
+  // request as one to a model API host whenever that route does, so capture
+  // reads the body as `elsewhere` has it read, for either route.
+  private pendingRoute(requested: Target, elsewhere: Route): PendingRoute | null {
+    if (!requested.named || requested.port !== this.proxyPort || !requested.origin.startsWith('http://')) return null;
+    return new PendingRoute(requested, this.route({ ...requested, atProxyHost: true, named: false }), elsewhere);
+  }
+
+  // Runs `run` with the route of a request: at once, or for a pending route
+  // once it is decided, when capture is still on then and scans the request by
+  // that route.
+  private whenRouted(route: Route | PendingRoute, run: (route: Route) => void): void {
+    if (!(route instanceof PendingRoute)) return run(route);
+    route.whenDecided((decided) => {
+      if (decided !== null && this.active) run(decided);
+    });
   }
 
   async start(): Promise<void> {
@@ -338,13 +377,33 @@ export class AILayerCapture {
         this.patch(builtin as unknown as Record<string, unknown>, key, (original) =>
           function (this: unknown, ...args: unknown[]) {
             const req = original.apply(this, args);
-            if (self.capturing() && capturedFetch.getStore() !== true) {
-              safely(() => self.watchClientRequest(req as http.ClientRequest, args, protocol));
+            if (self.capturing()) {
+              const fetching = capturedFetch.getStore();
+              if (fetching === undefined) safely(() => self.watchClientRequest(req as http.ClientRequest, args, protocol));
+              else if (fetching !== true) safely(() => self.watchFetchRequest(fetching, req as http.ClientRequest, args, protocol));
             }
             return req;
           });
       }
     }
+    // The `fetch` of Node.js is undici's, which publishes each request it
+    // creates on `undici:request:create`, and on `undici:client:sendHeaders`
+    // the socket it writes a request to. Capture takes a request created in
+    // the async context of a fetch whose route waits for its connection, to
+    // the URL that fetch was called with, for the request of that fetch, and
+    // decides the route by the socket that request is written to.
+    this.subscribe('undici:request:create', (message) => {
+      const fetching = capturedFetch.getStore();
+      const request = isRecord(message) ? message.request : undefined;
+      if (fetching instanceof PendingRoute && isRecord(request) && fetching.isFor(request.origin, request.path)) {
+        this.undiciRequests.set(request, fetching);
+      }
+    });
+    this.subscribe('undici:client:sendHeaders', (message) => {
+      const request = isRecord(message) ? message.request : undefined;
+      const pending = isRecord(request) ? this.undiciRequests.get(request) : undefined;
+      if (isRecord(message) && pending) pending.decide(pending.isSentToProxy(message.socket));
+    });
     if (this.mcp) {
       this.patch(childProcess as unknown as Record<string, unknown>, 'spawn', (original) =>
         function (this: unknown, ...args: unknown[]) {
@@ -366,6 +425,8 @@ export class AILayerCapture {
       if (owner[key] === wrapper) owner[key] = original;
     }
     this.patches = [];
+    for (const { channel, onMessage } of this.subscriptions) diagnosticsChannel.unsubscribe(channel, onMessage);
+    this.subscriptions = [];
   }
 
   private patch(owner: Record<string, unknown>, key: string, wrap: (original: AnyFunction) => AnyFunction): void {
@@ -376,30 +437,61 @@ export class AILayerCapture {
     this.patches.push({ owner, key, original: original as AnyFunction, wrapper });
   }
 
+  // Listens on a diagnostics channel until `stop()`. An error a listener
+  // throws would reach the process as an uncaught exception, so `listen` runs
+  // as the rest of capture does.
+  private subscribe(channel: string, listen: (message: unknown) => void): void {
+    const onMessage = (message: unknown): void => safely(() => listen(message));
+    diagnosticsChannel.subscribe(channel, onMessage);
+    this.subscriptions.push({ channel, onMessage });
+  }
+
   // The agent's fetch is called at once, with the arguments as given, as it
   // would be with no hook: it reads the URL and the options before the agent's
   // next statement can change them, and a body capture reads does not hold the
   // request back. Capture reads what it scans from the arguments before that
   // call, and the body of a Request from a copy, which it scans once whole.
+  //
+  // The scan of a request whose route waits for its connection is made once
+  // that route is decided: by the socket undici writes the request to, or the
+  // one a fetch built on `http` sends it on, and otherwise when the fetch
+  // settles, as the route of a request that is not sent to the proxy.
   private captureFetch(original: AnyFunction, thisArg: unknown, args: unknown[]): unknown {
-    let request: { route: Route; body: Body | Promise<Body> } | null = null;
+    let request: { route: Route; pending: PendingRoute | null; body: Body | Promise<Body> } | null = null;
     try {
       const requested = fetchTarget(args[0]);
       const route = requested && this.route(requested);
-      if (route) request = { route, body: fetchBody(args[0], args[1], route.model) };
+      if (requested && route) request = { route, pending: this.pendingRoute(requested, route), body: fetchBody(args[0], args[1], route.model) };
     } catch {
       // Capture never stands between the agent and its request.
     }
     if (request === null) return original.apply(thisArg, args);
-    const result = capturedFetch.run(true, () => original.apply(thisArg, args));
-    const { route, body } = request;
-    const { target, model, proxied } = route;
-    if (body instanceof Promise) void body.then((read) => this.takeRequest(route, read));
-    else this.takeRequest(route, body);
+    const { route, pending, body } = request;
+    const result = capturedFetch.run(pending ?? true, () => original.apply(thisArg, args));
+    const take = (read: Body): void => this.whenRouted(pending ?? route, (sent) => this.takeRequest(sent, read));
+    if (body instanceof Promise) void body.then(take);
+    else take(body);
+    if (pending) {
+      if (!isPromiseLike(result)) {
+        pending.decide(false);
+        return result;
+      }
+      return result.then(
+        (response) => {
+          const sent = pending.decide(false);
+          if (sent !== null && sent.model && !sent.proxied) safely(() => this.watchFetchResponse(sent.target, response as FetchResponse));
+          return response;
+        },
+        (error: unknown) => {
+          pending.decide(false);
+          throw error;
+        },
+      );
+    }
     // ARP's proxy scans the reply to a request it passes on.
-    if (!model || proxied || !isPromiseLike(result)) return result;
+    if (!route.model || route.proxied || !isPromiseLike(result)) return result;
     return result.then((response) => {
-      safely(() => this.watchFetchResponse(target, response as FetchResponse));
+      safely(() => this.watchFetchResponse(route.target, response as FetchResponse));
       return response;
     });
   }
@@ -432,12 +524,13 @@ export class AILayerCapture {
   private watchClientRequest(req: http.ClientRequest, args: unknown[], protocol: string): void {
     const requested = requestTarget(args, protocol);
     const route = requested && this.route(requested);
-    if (!route) return;
-    const { target, model, proxied } = route;
+    if (!requested || !route) return;
+    const pending = this.pendingRoute(requested, route);
+    if (pending) this.watchConnection(req, pending);
     const self = this;
 
     if (!req.writableEnded) {
-      const body = new BodyCollector(!model);
+      const body = new BodyCollector(!route.model);
       const write = req.write as unknown as AnyFunction;
       const end = req.end as unknown as AnyFunction;
       let ended = false;
@@ -453,8 +546,12 @@ export class AILayerCapture {
               if (typeof endArgs[0] !== 'function') body.add(endArgs[0], endArgs[1]);
               const text = body.text();
               const over = body.over();
-              if (text !== null) self.scanRequest(route, text);
-              else if (over !== null) self.reportOverLimit(target, model, 'request', over);
+              // The scan of a request whose route waits for its connection is
+              // made once that route is decided.
+              self.whenRouted(pending ?? route, (sent) => {
+                if (text !== null) self.scanRequest(sent, text);
+                else if (over !== null) self.reportOverLimit(sent.target, sent.model, 'request', over);
+              });
             });
           }
         }
@@ -466,17 +563,48 @@ export class AILayerCapture {
     // socket; it knows there is none when `emit('response')` returns false. So
     // the response is watched from inside `emit`, which returns what it would
     // with no hook, and is not scanned when it is discarded, as the agent never
-    // reads it. ARP's proxy scans the reply to a request it passes on.
-    if (model && !proxied) {
+    // reads it. ARP's proxy scans the reply to a request it passes on. A
+    // pending route still undecided when the response comes is decided then,
+    // as the route of a request that is not sent to the proxy.
+    if (pending || (route.model && !route.proxied)) {
       const emit = req.emit as unknown as AnyFunction;
       req.emit = function (this: unknown, ...emitArgs: unknown[]) {
         if (emitArgs[0] !== 'response' || !self.active) return emit.apply(this, emitArgs);
-        const watched = attempt(() => self.watchIncoming(target, emitArgs[1] as http.IncomingMessage));
+        const sent = pending ? pending.decide(false) : route;
+        if (sent === null || !sent.model || sent.proxied) return emit.apply(this, emitArgs);
+        const watched = attempt(() => self.watchIncoming(sent.target, emitArgs[1] as http.IncomingMessage));
         const taken = emit.apply(this, emitArgs);
         if (!taken) watched?.ignore();
         return taken;
       } as unknown as typeof req.emit;
     }
+  }
+
+  // Decides `pending` by the connection `req` is sent on: `http` emits
+  // `socket` on the request with the socket it gives it, which an agent that
+  // keeps sockets alive can hand over connected, and which otherwise emits
+  // `connect` once it is. A request that closes with its route undecided, as
+  // when no connection is made, is decided as one that is not sent to the
+  // proxy.
+  private watchConnection(req: http.ClientRequest, pending: PendingRoute): void {
+    const emit = req.emit as unknown as AnyFunction;
+    req.emit = function (this: unknown, ...emitArgs: unknown[]) {
+      if (emitArgs[0] === 'socket') {
+        const socket = emitArgs[1];
+        safely(() => whenConnected(socket, () => pending.decide(pending.isSentToProxy(socket))));
+      } else if (emitArgs[0] === 'close') {
+        pending.decide(false);
+      }
+      return emit.apply(this, emitArgs);
+    } as unknown as typeof req.emit;
+  }
+
+  // A request made with the hooked `request` or `get` during a fetch whose
+  // route waits for its connection, as a fetch built on `http` makes one: the
+  // request to the URL the fetch was called with tells that connection.
+  private watchFetchRequest(pending: PendingRoute, req: http.ClientRequest, args: unknown[], protocol: string): void {
+    const target = requestTarget(args, protocol);
+    if (target !== null && pending.isFor(target.origin, target.path)) this.watchConnection(req, pending);
   }
 
   // Observes the chunks the agent reads from the response, through `emit`, so
@@ -748,6 +876,73 @@ class BodyCollector {
     this.state = 'skip';
     this.chunks = [];
     this.count = 0;
+  }
+}
+
+// The route of a plain HTTP request to the proxy's port at a name, such as
+// localhost or 127.1, which waits for the connection the request is sent on.
+// It is decided as `atProxy` when that connection is to ARP's proxy: the route
+// of a request to the proxy's port at 127.0.0.1, or null when capture does not
+// scan one. It is decided as `elsewhere` when the request is sent on another
+// connection, or on one capture does not see.
+class PendingRoute {
+  // The route, once decided: null when capture does not scan the request.
+  private decided: { route: Route | null } | null = null;
+  private waiting: Array<(route: Route | null) => void> = [];
+
+  constructor(
+    private readonly requested: Target,
+    private readonly atProxy: Route | null,
+    private readonly elsewhere: Route,
+  ) {}
+
+  /** True for the origin and the path of the request this route is of. */
+  isFor(origin: unknown, path: unknown): boolean {
+    return origin === this.requested.origin && path === this.requested.path;
+  }
+
+  /**
+   * True when `socket` is connected to the proxy's port at an address
+   * `reachesProxyHost` accepts, as the socket gives the address it is
+   * connected to.
+   */
+  isSentToProxy(socket: unknown): boolean {
+    if (!isRecord(socket) || typeof socket.remoteAddress !== 'string') return false;
+    return String(socket.remotePort) === this.requested.port && reachesProxyHost(socket.remoteAddress.toLowerCase());
+  }
+
+  /**
+   * Decides the route, as `atProxy` or as `elsewhere`, when it is not decided
+   * yet, and runs what waits for it. Gives the route, as the first call
+   * decided it.
+   */
+  decide(sentToProxy: boolean): Route | null {
+    if (this.decided === null) {
+      const route = sentToProxy ? this.atProxy : this.elsewhere;
+      this.decided = { route };
+      for (const run of this.waiting.splice(0)) safely(() => run(route));
+    }
+    return this.decided.route;
+  }
+
+  /** Runs `run` with the route: at once when it is decided, and else once it is. */
+  whenDecided(run: (route: Route | null) => void): void {
+    if (this.decided === null) {
+      this.waiting.push(run);
+      return;
+    }
+    const { route } = this.decided;
+    safely(() => run(route));
+  }
+}
+
+// Runs `run` once `socket` is connected: at once for a socket that is not
+// connecting, such as one an agent kept alive.
+function whenConnected(socket: unknown, run: () => void): void {
+  if (isRecord(socket) && socket.connecting === true && typeof socket.once === 'function') {
+    (socket as unknown as NodeStream).once('connect', () => safely(run));
+  } else {
+    run();
   }
 }
 
