@@ -1511,6 +1511,104 @@ test('stop() puts back fetch, request and get of http and https, and spawn; an E
   assert.deepEqual(imported(), originals)
 })
 
+// A fetch the agent starts while capture runs can end after stop(): the
+// headers of its reply, the rest of its reply, or the rest of the body of a
+// Request it streams can arrive later. Capture reported each of those after
+// stop(), to the onEvent handlers, while isRunning() returned false: a reply
+// over 1 MiB once its headers or its copy arrived, and an A2A message longer
+// than the engine scans once its copy of the Request body was whole.
+test('a fetch whose reply, or the rest of whose Request body, arrives after stop() is not reported, as the runtime monitoring page says', async () => {
+  const total = 2 * 1024 * 1024
+  const reply = ofSize({ choices: [{ message: { role: 'assistant', content: LEAK } }] }, total)
+  // The server holds the reply to `/length`, and the rest of the reply to
+  // `/parts` after its first 64 KiB, until `gate` settles.
+  let gate = Promise.resolve()
+  let open = () => {}
+  const server = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', async () => {
+      const headers = { 'content-type': 'application/json', connection: 'close' }
+      if (req.url === '/length') {
+        await gate
+        res.writeHead(200, { ...headers, 'content-length': total }).end(reply)
+      } else {
+        res.writeHead(200, headers).write(reply.slice(0, 65536))
+        await gate
+        res.end(reply.slice(65536))
+      }
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const host = `127.0.0.1:${server.address().port}`
+  const peer = await serve()
+  const { arp, events, cleanup } = protect({ prompt: { enabled: true, capture: true, hosts: [host] }, a2a: { enabled: true, capture: true } })
+  const ask = (path) => fetch(`http://${host}${path}`, { method: 'POST', body: chat('Hello') })
+  // An A2A message/send with a text part of 70000 characters, sent as a
+  // Request whose body streams its first 8 KiB, and the rest once `gate`
+  // settles.
+  const message = new TextEncoder().encode(
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'message/send', params: { message: { role: 'user', messageId: 'm1', parts: [{ kind: 'text', text: 'x'.repeat(70000) }] } } }),
+  )
+  const send = () => {
+    let first = true
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (first) {
+          first = false
+          return controller.enqueue(message.subarray(0, 8192))
+        }
+        await gate
+        controller.enqueue(message.subarray(8192))
+        controller.close()
+      },
+    })
+    return fetch(new Request(`http://${peer.host}/a2a`, { method: 'POST', headers: { 'content-type': 'application/json' }, body, duplex: 'half' }))
+  }
+  try {
+    await arp.start()
+    // While capture runs, each of the three is reported.
+    assert.equal((await (await ask('/length')).text()).length, total)
+    assert.equal((await (await ask('/parts')).text()).length, total)
+    assert.equal(await (await send()).text(), '{}')
+    await until(events, (all) => reports(all).length >= 3)
+    await sleep(200)
+    assert.deepEqual(reports(events).map(({ source, data }) => `${source} ${data.reason} ${data.direction ?? ''}`.trim()), [
+      'prompt body-over-limit response',
+      'prompt body-over-limit response',
+      'a2a-protocol scan-truncated',
+    ])
+    // The same three, started while capture runs, end after stop(): the
+    // headers of the reply to `/length`, the rest of the reply to `/parts`,
+    // and the rest of the A2A message arrive once `gate` settles.
+    gate = new Promise((resolve) => {
+      open = resolve
+    })
+    const headersLater = ask('/length')
+    const restLater = await ask('/parts')
+    const bodyLater = send()
+    await sleep(200)
+    const before = events.length
+    await arp.stop()
+    open()
+    assert.equal((await (await headersLater).text()).length, total)
+    assert.equal((await restLater.text()).length, total)
+    assert.equal(await (await bodyLater).text(), '{}')
+    await sleep(500)
+    assert.equal(arp.isRunning(), false)
+    assert.deepEqual(events.slice(before).map((e) => `${e.source} ${e.description}`), [], 'capture reported an event after stop()')
+  } finally {
+    open()
+    await arp.stop()
+    server.closeAllConnections?.()
+    await new Promise((resolve) => server.close(resolve))
+    await peer.close()
+    cleanup()
+  }
+  const page = readFileSync(join(root, 'docs', 'runtime-monitoring.md'), 'utf8').replace(/\s+/g, ' ')
+  const said = 'Capture makes neither report after `stop()`, including for a `fetch` the agent started before `stop()` whose reply, or the rest of whose `Request` body, arrives after it.'
+  assert.ok(page.includes(said), `the runtime monitoring page does not say: ${said}`)
+})
+
 test('spawn is hooked with aiLayer.mcp alone', async () => {
   const before = hooked()
   for (const aiLayer of [{ prompt: { enabled: true, capture: true } }, { a2a: { enabled: true, capture: true } }]) {

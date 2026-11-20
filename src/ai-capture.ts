@@ -404,21 +404,26 @@ export class AILayerCapture {
     });
   }
 
-  // Scans a request body, or reports one that is too large to scan.
+  // Scans a request body, or reports one that is too large to scan. The copy
+  // of a Request body can be read whole after stop(), and is then dropped.
   private takeRequest(route: Route, body: Body): void {
+    if (!this.active) return;
     if (typeof body === 'string') safely(() => this.scanRequest(route, body));
     else if (body !== null) safely(() => this.reportOverLimit(route.target, route.model, 'request', body.over, undefined, body.atLeast));
   }
 
+  // The headers of a reply, and the copy of its body, can arrive after stop():
+  // a reply whose headers arrive then is not copied, and a copy read then is
+  // not scanned. Neither is reported.
   private watchFetchResponse(target: Target, response: FetchResponse): void {
-    if (!response || response.body === null || response.body === undefined) return;
+    if (!this.active || !response || response.body === null || response.body === undefined) return;
     // A reply over the limit is not scanned, so it is not copied either.
     const length = Number(response.headers.get('content-length'));
     if (length > MAX_CAPTURE_BYTES) return this.reportOverLimit(target, true, 'response', length);
     const copy = response.clone().body;
     // After clone(), `body` is the agent's branch of the body.
     void readCopy(copy, response.body).then((read) => {
-      if (read === null) return;
+      if (read === null || !this.active) return;
       if ('over' in read) safely(() => this.reportOverLimit(target, true, 'response', read.over, undefined, read.atLeast));
       else safely(() => this.scanResponse(read.bytes.toString('utf8')));
     });
@@ -624,8 +629,9 @@ export class AILayerCapture {
         if (text.trim() === '') continue;
         this.a2a.scanMessage(this.agentName, to, text);
         // The result of `scanMessage` carries no `truncated`; `scanText` with
-        // no patterns gives the one the engine's scans of the message had.
-        if (scanText(text, []).truncated) {
+        // no patterns gives the one the engine's scans of the message had. A
+        // stopped interceptor scans nothing, so there is no scan to report.
+        if (this.a2a.isRunning() && scanText(text, []).truncated) {
           this.reportTruncated('a2a-protocol', `the message to ${to}`, text.length, { from: this.agentName, to });
         }
       }
@@ -673,8 +679,11 @@ export class AILayerCapture {
   }
 
   // The event carries the reason and the lengths, and none of the text. It is
-  // `normal`, at `info`, so no default rule matches it.
+  // `normal`, at `info`, so no default rule matches it. Capture reports nothing
+  // while it is stopped: a fetch the agent started before stop() can end after
+  // it.
   private report(source: MonitorType, description: string, data: Record<string, unknown>): void {
+    if (!this.active) return;
     void this.engine.emit({ source, category: 'normal', severity: 'info', description, data }).catch(() => {});
   }
 }
